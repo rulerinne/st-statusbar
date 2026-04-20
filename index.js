@@ -7,6 +7,7 @@ const hostId = "st-local-statusbar-host";
 const frameId = "st-local-statusbar-frame";
 const enabledInputId = "st_local_statusbar_enabled";
 const reloadButtonId = "st_local_statusbar_reload";
+const hiddenSourceClass = "st-local-statusbar-hidden-source";
 
 const defaultSettings = {
     enabled: true,
@@ -57,6 +58,21 @@ function getFrame() {
     return document.getElementById(frameId);
 }
 
+function normalizeTextForMatch(text) {
+    return String(text || "").replace(/\s+/g, "");
+}
+
+function stripHtmlToText(html) {
+    const div = document.createElement("div");
+    div.innerHTML = String(html || "").replace(/<\s*br\s*\/?>/gi, "\n");
+    return div.textContent || div.innerText || "";
+}
+
+function extractStatusBlock(rawMessage) {
+    const match = String(rawMessage || "").match(/<[Ss]tatus(?:[Bb]lock)?>([\s\S]*?)<\/[Ss]tatus(?:[Bb]lock)?>/);
+    return match ? stripHtmlToText(match[1]).trim() : "";
+}
+
 function buildSrcdoc(fragment) {
     if (fragment.includes("<head>")) {
         return `<!doctype html><html lang="zh-CN">${fragment.replace("<head>", `<head>${bridgeScript}`)}</html>`;
@@ -84,6 +100,139 @@ function getCurrentRawMessage() {
         console.warn("[st-local-statusbar] Failed to read current raw message:", error);
         return "";
     }
+}
+
+function getCurrentMessageElement() {
+    let id = null;
+    try {
+        id = typeof window.getCurrentMessageId === "function" ? window.getCurrentMessageId() : null;
+    } catch (error) {
+        id = null;
+    }
+
+    if (id !== null && typeof id !== "undefined") {
+        const escapedId = CSS.escape(String(id));
+        const selectors = [
+            `#chat .mes[mesid="${escapedId}"]`,
+            `#chat .mes[data-mes-id="${escapedId}"]`,
+            `#chat .mes[data-message-id="${escapedId}"]`,
+        ];
+        for (const selector of selectors) {
+            const el = document.querySelector(selector);
+            if (el) {
+                return el;
+            }
+        }
+    }
+
+    const messages = Array.from(document.querySelectorAll("#chat .mes"));
+    return messages.length ? messages[messages.length - 1] : null;
+}
+
+function getTextNodesForMatch(container) {
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+            const parent = node.parentElement;
+            if (!parent) {
+                return NodeFilter.FILTER_REJECT;
+            }
+            if (parent.closest(`#${hostId}, .${hiddenSourceClass}`)) {
+                return NodeFilter.FILTER_REJECT;
+            }
+            return NodeFilter.FILTER_ACCEPT;
+        },
+    });
+
+    const nodes = [];
+    let node = walker.nextNode();
+    while (node) {
+        nodes.push(node);
+        node = walker.nextNode();
+    }
+    return nodes;
+}
+
+function hideStatusTextInMessage(mesText, statusText) {
+    const existingHidden = mesText.querySelector(`.${hiddenSourceClass}`);
+    if (existingHidden) {
+        return existingHidden;
+    }
+
+    const target = normalizeTextForMatch(statusText);
+    if (!target) {
+        return null;
+    }
+
+    const textNodes = getTextNodesForMatch(mesText);
+    const chars = [];
+    for (const node of textNodes) {
+        const value = node.nodeValue || "";
+        for (let offset = 0; offset < value.length; offset += 1) {
+            const char = value[offset];
+            if (/\s/.test(char)) {
+                continue;
+            }
+            chars.push({ char, node, offset });
+        }
+    }
+
+    const haystack = chars.map((item) => item.char).join("");
+    const start = haystack.indexOf(target);
+    if (start < 0) {
+        return null;
+    }
+
+    const end = start + target.length - 1;
+    const startPos = chars[start];
+    const endPos = chars[end];
+    if (!startPos || !endPos) {
+        return null;
+    }
+
+    const range = document.createRange();
+    range.setStart(startPos.node, startPos.offset);
+    range.setEnd(endPos.node, endPos.offset + 1);
+
+    const hidden = document.createElement("span");
+    hidden.className = hiddenSourceClass;
+    hidden.hidden = true;
+    hidden.appendChild(range.extractContents());
+    range.insertNode(hidden);
+    return hidden;
+}
+
+function placeHostInRenderedMessage(host, rawMessage) {
+    const statusText = extractStatusBlock(rawMessage);
+    if (!statusText) {
+        return false;
+    }
+
+    const candidates = [];
+    const currentMesText = getCurrentMessageElement()?.querySelector(".mes_text");
+    if (currentMesText) {
+        candidates.push(currentMesText);
+    }
+    candidates.push(...Array.from(document.querySelectorAll("#chat .mes_text")).reverse());
+
+    const seen = new Set();
+    for (const mesText of candidates) {
+        if (!mesText || seen.has(mesText)) {
+            continue;
+        }
+        seen.add(mesText);
+
+        const hidden = hideStatusTextInMessage(mesText, statusText);
+        if (!hidden) {
+            continue;
+        }
+
+        if (host.parentElement !== mesText || host.nextSibling !== hidden) {
+            hidden.before(host);
+        }
+        return true;
+    }
+
+    return false;
 }
 
 function updateFrameHeight(frame) {
@@ -218,13 +367,15 @@ function applyEnabledState() {
 
 async function ensureMounted() {
     const settings = ensureSettings();
+    const rawMessage = getCurrentRawMessage();
 
     let host = getHost();
     if (!host) {
         host = createHost();
     }
 
-    if (host.parentElement !== document.body) {
+    const placedInMessage = placeHostInRenderedMessage(host, rawMessage);
+    if (!placedInMessage && host.parentElement !== document.body) {
         document.body.appendChild(host);
     }
 
