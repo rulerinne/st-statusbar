@@ -44,10 +44,6 @@ function ensureSettings() {
     return settings;
 }
 
-function getChatEl() {
-    return document.getElementById("chat");
-}
-
 function getSettingsContainer() {
     return document.getElementById("extensions_settings")
         || document.getElementById("extensions_settings2");
@@ -195,7 +191,7 @@ function bindFrame(frame) {
 function createHost() {
     const host = document.createElement("div");
     host.id = hostId;
-    host.className = "mes st-local-statusbar-host";
+    host.className = "st-local-statusbar-host";
     host.setAttribute("data-name", "本地状态栏");
     host.innerHTML = `
         <div class="st-local-statusbar-shell">
@@ -222,18 +218,14 @@ function applyEnabledState() {
 
 async function ensureMounted() {
     const settings = ensureSettings();
-    const chat = getChatEl();
-    if (!chat) {
-        return;
-    }
 
     let host = getHost();
     if (!host) {
         host = createHost();
     }
 
-    if (host.parentElement !== chat || chat.firstElementChild !== host) {
-        chat.prepend(host);
+    if (host.parentElement !== document.body) {
+        document.body.appendChild(host);
     }
 
     applyEnabledState();
