@@ -12,9 +12,18 @@ const defaultSettings = {
     enabled: true,
 };
 
+const bridgeScript = `
+<script>
+window.__STLSB_BRIDGE__ = window.__STLSB_BRIDGE__ || { message: "" };
+window.getCurrentMessageId = () => 0;
+window.getChatMessages = () => [{ message: window.__STLSB_BRIDGE__.message || "" }];
+</script>`;
+
 let fragmentCache = null;
 let mountTimer = null;
+let syncTimer = null;
 let domObserver = null;
+let eventSourceInstalled = false;
 
 function fileUrl(name) {
     return new URL(name, extensionBaseUrl).href;
@@ -53,7 +62,10 @@ function getFrame() {
 }
 
 function buildSrcdoc(fragment) {
-    return `<!doctype html><html lang="zh-CN">${fragment}</html>`;
+    if (fragment.includes("<head>")) {
+        return `<!doctype html><html lang="zh-CN">${fragment.replace("<head>", `<head>${bridgeScript}`)}</html>`;
+    }
+    return `<!doctype html><html lang="zh-CN"><head>${bridgeScript}</head>${fragment}</html>`;
 }
 
 async function loadFragment() {
@@ -62,6 +74,20 @@ async function loadFragment() {
     }
     fragmentCache = await $.get(fileUrl("statusbar.fragment.html"));
     return fragmentCache;
+}
+
+function getCurrentRawMessage() {
+    try {
+        if (typeof window.getCurrentMessageId !== "function" || typeof window.getChatMessages !== "function") {
+            return "";
+        }
+        const data = window.getChatMessages(window.getCurrentMessageId());
+        const messageObj = Array.isArray(data) ? data[0] : data;
+        return typeof messageObj?.message === "string" ? messageObj.message : "";
+    } catch (error) {
+        console.warn("[st-local-statusbar] Failed to read current raw message:", error);
+        return "";
+    }
 }
 
 function updateFrameHeight(frame) {
@@ -88,6 +114,42 @@ function updateFrameHeight(frame) {
     }
 }
 
+function syncFrameMessage(force = false) {
+    const frame = getFrame();
+    if (!frame || !ensureSettings().enabled) {
+        return;
+    }
+
+    const rawMessage = getCurrentRawMessage();
+    if (!force && frame.__stlsbLastMessage === rawMessage) {
+        return;
+    }
+
+    try {
+        const win = frame.contentWindow;
+        if (!win?.__STLSB_BRIDGE__) {
+            return;
+        }
+
+        win.__STLSB_BRIDGE__.message = rawMessage;
+        frame.__stlsbLastMessage = rawMessage;
+
+        if (typeof win.execParseStatusBlock === "function") {
+            win.execParseStatusBlock();
+        }
+        updateFrameHeight(frame);
+    } catch (error) {
+        console.warn("[st-local-statusbar] Failed to sync raw message into iframe:", error);
+    }
+}
+
+function queueSync(delay = 60, force = false) {
+    if (syncTimer) {
+        clearTimeout(syncTimer);
+    }
+    syncTimer = window.setTimeout(() => syncFrameMessage(force), delay);
+}
+
 function bindFrame(frame) {
     if (!frame || frame.dataset.bound === "1") {
         return;
@@ -100,6 +162,7 @@ function bindFrame(frame) {
 
     frame.addEventListener("load", () => {
         scheduleResize();
+        syncFrameMessage(true);
 
         try {
             if (frame.__statusbarResizeObserver) {
@@ -122,7 +185,10 @@ function bindFrame(frame) {
         if (frame.__statusbarHeightTimer) {
             clearInterval(frame.__statusbarHeightTimer);
         }
-        frame.__statusbarHeightTimer = window.setInterval(scheduleResize, 1000);
+        frame.__statusbarHeightTimer = window.setInterval(() => {
+            scheduleResize();
+            syncFrameMessage();
+        }, 1000);
     });
 }
 
@@ -166,9 +232,7 @@ async function ensureMounted() {
         host = createHost();
     }
 
-    if (host.parentElement !== chat) {
-        chat.prepend(host);
-    } else if (chat.firstElementChild !== host) {
+    if (host.parentElement !== chat || chat.firstElementChild !== host) {
         chat.prepend(host);
     }
 
@@ -184,9 +248,11 @@ async function ensureMounted() {
     const version = `${fragment.length}:${fragment.charCodeAt(0) || 0}`;
     if (frame.dataset.fragmentVersion !== version) {
         frame.dataset.fragmentVersion = version;
+        delete frame.__stlsbLastMessage;
         frame.srcdoc = buildSrcdoc(fragment);
     } else {
         updateFrameHeight(frame);
+        queueSync(0, true);
     }
 }
 
@@ -207,6 +273,7 @@ function onEnabledInput(event) {
     applyEnabledState();
     if (ensureSettings().enabled) {
         queueMount(0);
+        queueSync(120, true);
     }
 }
 
@@ -215,6 +282,7 @@ function onReloadClick() {
     const frame = getFrame();
     if (frame) {
         delete frame.dataset.fragmentVersion;
+        delete frame.__stlsbLastMessage;
     }
     queueMount(0);
     if (typeof toastr !== "undefined") {
@@ -226,11 +294,32 @@ function installDomObserver() {
     if (domObserver) {
         return;
     }
-    domObserver = new MutationObserver(() => queueMount());
+    domObserver = new MutationObserver(() => {
+        queueMount();
+        queueSync(120);
+    });
     domObserver.observe(document.body, {
         childList: true,
         subtree: true,
     });
+}
+
+function installEventSourceHooks() {
+    if (eventSourceInstalled) {
+        return;
+    }
+    const evtSrc = window.eventSource;
+    if (!evtSrc || typeof evtSrc.on !== "function") {
+        return;
+    }
+    const trigger = () => {
+        queueMount(50);
+        queueSync(100);
+    };
+    ["generation_ended", "message_updated", "chat_id_changed", "message_sent"].forEach((eventName) => {
+        evtSrc.on(eventName, trigger);
+    });
+    eventSourceInstalled = true;
 }
 
 async function initSettingsUi() {
@@ -259,5 +348,7 @@ jQuery(async () => {
     await initSettingsUi();
     syncSettingsUi();
     installDomObserver();
+    installEventSourceHooks();
     queueMount(0);
+    queueSync(150, true);
 });
