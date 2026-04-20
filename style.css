@@ -1,5 +1,10 @@
 #st-local-statusbar-host {
+  width: 100%;
   margin: 0 0 12px 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
 }
 
 .st-local-statusbar-shell {
@@ -9,10 +14,14 @@
 .st-local-statusbar-frame {
   display: block;
   width: 100%;
-  min-height: 120px;
+  min-height: 140px;
   border: 0;
   background: transparent;
   overflow: hidden;
+}
+
+.st-local-statusbar-settings {
+  margin-top: 8px;
 }
 
 .st-local-statusbar-settings .menu_button {
