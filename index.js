@@ -90,6 +90,19 @@ function normalizeTextForMatch(text) {
     return String(text || "").replace(/\s+/g, "");
 }
 
+function stripMarkdownEmphasis(text) {
+    return String(text || "")
+        .replace(/(^|[\s(（\[【{])([*_]{1,3})(?=\S)([\s\S]*?\S)\2(?=$|[\s),，.。!?！？;；:：\]】}）])/g, "$1$3");
+}
+
+function getNormalizedMatchCandidates(text) {
+    const candidates = [
+        normalizeTextForMatch(text),
+        normalizeTextForMatch(stripMarkdownEmphasis(text)),
+    ].filter(Boolean);
+    return Array.from(new Set(candidates));
+}
+
 function stripHtmlToText(html) {
     const div = document.createElement("div");
     div.innerHTML = String(html || "").replace(/<\s*br\s*\/?>/gi, "\n");
@@ -379,14 +392,17 @@ function ensureHiddenCotBlock(mesText, hiddenClass, ignoredClasses) {
 }
 
 function ensureHiddenMatchedText(mesText, sourceText, hiddenClass, ignoredClasses) {
-    const target = normalizeTextForMatch(sourceText);
-    if (!target) {
+    const targets = getNormalizedMatchCandidates(sourceText);
+    if (!targets.length) {
         return null;
     }
 
     const existingHiddenNodes = Array.from(mesText.querySelectorAll(`.${hiddenClass}`));
     if (existingHiddenNodes.length) {
-        const exactHidden = existingHiddenNodes.find((hidden) => normalizeTextForMatch(hidden.textContent) === target);
+        const exactHidden = existingHiddenNodes.find((hidden) => {
+            const hiddenText = normalizeTextForMatch(hidden.textContent);
+            return targets.includes(hiddenText);
+        });
         existingHiddenNodes
             .filter((hidden) => hidden !== exactHidden)
             .forEach((hidden) => restoreHiddenSource(hidden));
@@ -410,6 +426,11 @@ function ensureHiddenMatchedText(mesText, sourceText, hiddenClass, ignoredClasse
     }
 
     const haystack = chars.map((item) => item.char).join("");
+    const target = targets.find((candidate) => haystack.includes(candidate));
+    if (!target) {
+        return null;
+    }
+
     const start = haystack.indexOf(target);
     if (start < 0) {
         return null;
