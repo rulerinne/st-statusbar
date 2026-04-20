@@ -1,0 +1,27 @@
+#st-local-statusbar-host {
+  margin: 0 0 12px 0;
+}
+
+.st-local-statusbar-shell {
+  width: 100%;
+}
+
+.st-local-statusbar-frame {
+  display: block;
+  width: 100%;
+  min-height: 120px;
+  border: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+.st-local-statusbar-settings .menu_button {
+  margin-top: 8px;
+}
+
+.st-local-statusbar-settings .notes {
+  display: block;
+  margin-top: 8px;
+  opacity: 0.8;
+  line-height: 1.45;
+}
