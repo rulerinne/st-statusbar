@@ -3,28 +3,38 @@ import { saveSettingsDebounced } from "../../../../script.js";
 
 const extensionName = "st-local-statusbar";
 const extensionBaseUrl = new URL(".", import.meta.url);
-const hostId = "st-local-statusbar-host";
-const frameId = "st-local-statusbar-frame";
+const hostClass = "st-local-statusbar-host";
+const frameClass = "st-local-statusbar-frame";
+const hiddenSourceClass = "st-local-statusbar-hidden-source";
 const enabledInputId = "st_local_statusbar_enabled";
 const reloadButtonId = "st_local_statusbar_reload";
-const hiddenSourceClass = "st-local-statusbar-hidden-source";
+const autoExpandInputId = "st_local_statusbar_auto_expand";
+const widthInputId = "st_local_statusbar_width";
+const textScaleInputId = "st_local_statusbar_text_scale";
+const textWeightInputId = "st_local_statusbar_text_weight";
+const textAlignInputId = "st_local_statusbar_text_align";
 
 const defaultSettings = {
     enabled: true,
+    autoExpand: true,
+    panelWidth: 100,
+    textScale: 95,
+    textWeight: 500,
+    textAlign: "right",
 };
 
 const bridgeScript = `
 <script>
-window.__STLSB_BRIDGE__ = window.__STLSB_BRIDGE__ || { message: "" };
+window.__STLSB_BRIDGE__ = window.__STLSB_BRIDGE__ || { message: "__STLSB_INITIAL_MESSAGE__" };
+window.eventSource = { on: () => {} };
 window.getCurrentMessageId = () => 0;
 window.getChatMessages = () => [{ message: window.__STLSB_BRIDGE__.message || "" }];
 </script>`;
 
 let fragmentCache = null;
 let mountTimer = null;
-let syncTimer = null;
 let domObserver = null;
-let eventSourceInstalled = false;
+let lastCharacterMessageSignature = "";
 
 function fileUrl(name) {
     return new URL(name, extensionBaseUrl).href;
@@ -48,14 +58,6 @@ function ensureSettings() {
 function getSettingsContainer() {
     return document.getElementById("extensions_settings")
         || document.getElementById("extensions_settings2");
-}
-
-function getHost() {
-    return document.getElementById(hostId);
-}
-
-function getFrame() {
-    return document.getElementById(frameId);
 }
 
 function getContextSafe() {
@@ -93,11 +95,21 @@ function extractStatusBlock(rawMessage) {
     return match ? stripHtmlToText(match[1]).trim() : "";
 }
 
-function buildSrcdoc(fragment) {
+function escapeScriptString(value) {
+    return String(value || "")
+        .replace(/\\/g, "\\\\")
+        .replace(/"/g, '\\"')
+        .replace(/\r/g, "\\r")
+        .replace(/\n/g, "\\n")
+        .replace(/<\/script/gi, "<\\/script");
+}
+
+function buildSrcdoc(fragment, initialMessage = "") {
+    const bridge = bridgeScript.replace("__STLSB_INITIAL_MESSAGE__", escapeScriptString(initialMessage));
     if (fragment.includes("<head>")) {
-        return `<!doctype html><html lang="zh-CN">${fragment.replace("<head>", `<head>${bridgeScript}`)}</html>`;
+        return `<!doctype html><html lang="zh-CN">${fragment.replace("<head>", `<head>${bridge}`)}</html>`;
     }
-    return `<!doctype html><html lang="zh-CN"><head>${bridgeScript}</head>${fragment}</html>`;
+    return `<!doctype html><html lang="zh-CN"><head>${bridge}</head>${fragment}</html>`;
 }
 
 async function loadFragment() {
@@ -108,13 +120,16 @@ async function loadFragment() {
     return fragmentCache;
 }
 
-function getCurrentRawMessage() {
-    const domMessage = getCurrentMessageElement();
+function getCharacterMessageElements() {
+    return Array.from(document.querySelectorAll('#chat .mes[is_user="false"]')).reverse();
+}
+
+function getRawMessageByDomMessage(domMessage) {
     const mesId = domMessage?.getAttribute("mesid");
     const swipeId = Number(domMessage?.getAttribute("swipeid") || "0");
-
     const context = getContextSafe();
     const chat = Array.isArray(context?.chat) ? context.chat : null;
+
     if (chat && mesId !== null && typeof mesId !== "undefined") {
         const item = chat[Number(mesId)];
         const swipeText = Array.isArray(item?.swipes) ? item.swipes[Number.isFinite(swipeId) ? swipeId : 0] : "";
@@ -124,52 +139,36 @@ function getCurrentRawMessage() {
         }
     }
 
-    if (chat?.length) {
-        const item = chat[chat.length - 1];
-        const raw = item?.mes || item?.message || item?.text || "";
-        if (typeof raw === "string") {
-            return raw;
-        }
-    }
-
-    try {
-        if (typeof window.getCurrentMessageId !== "function" || typeof window.getChatMessages !== "function") {
-            return "";
-        }
-        const data = window.getChatMessages(window.getCurrentMessageId());
-        const messageObj = Array.isArray(data) ? data[0] : data;
-        return typeof messageObj?.message === "string" ? messageObj.message : "";
-    } catch (error) {
-        console.warn("[st-local-statusbar] Failed to read current raw message:", error);
-        return "";
-    }
+    return "";
 }
 
-function getCurrentMessageElement() {
-    let id = null;
-    try {
-        id = typeof window.getCurrentMessageId === "function" ? window.getCurrentMessageId() : null;
-    } catch (error) {
-        id = null;
+function getCharacterMessageSignature() {
+    return getCharacterMessageElements().map((mes) => {
+        const mesId = mes.getAttribute("mesid") || "";
+        const text = mes.querySelector(".mes_text")?.textContent || "";
+        return `${mesId}::${text.trim()}`;
+    }).join("||");
+}
+
+function getStatusTextForMessage(rawMessage, mesText) {
+    const extracted = extractStatusBlock(rawMessage);
+    if (extracted) {
+        return extracted;
     }
 
-    if (id !== null && typeof id !== "undefined") {
-        const escapedId = CSS.escape(String(id));
-        const selectors = [
-            `#chat .mes[mesid="${escapedId}"]`,
-            `#chat .mes[data-mes-id="${escapedId}"]`,
-            `#chat .mes[data-message-id="${escapedId}"]`,
-        ];
-        for (const selector of selectors) {
-            const el = document.querySelector(selector);
-            if (el) {
-                return el;
+    if (!rawMessage) {
+        const text = mesText?.innerText || mesText?.textContent || "";
+        const contentText = mesText?.querySelector("content")?.textContent || "";
+        if (contentText && text.includes(contentText)) {
+            const idx = text.indexOf(contentText);
+            const rest = text.slice(idx + contentText.length).trim();
+            if (rest) {
+                return rest;
             }
         }
     }
 
-    const messages = Array.from(document.querySelectorAll("#chat .mes"));
-    return messages.length ? messages[messages.length - 1] : null;
+    return "";
 }
 
 function getTextNodesForMatch(container) {
@@ -179,7 +178,7 @@ function getTextNodesForMatch(container) {
             if (!parent) {
                 return NodeFilter.FILTER_REJECT;
             }
-            if (parent.closest(`#${hostId}, .${hiddenSourceClass}`)) {
+            if (parent.closest(`.${hostClass}, .${hiddenSourceClass}`)) {
                 return NodeFilter.FILTER_REJECT;
             }
             return NodeFilter.FILTER_ACCEPT;
@@ -195,15 +194,34 @@ function getTextNodesForMatch(container) {
     return nodes;
 }
 
-function hideStatusTextInMessage(mesText, statusText) {
-    const existingHidden = mesText.querySelector(`.${hiddenSourceClass}`);
-    if (existingHidden) {
-        return existingHidden;
+function restoreHiddenSource(hidden) {
+    if (!(hidden instanceof Element)) {
+        return;
     }
 
+    const fragment = document.createDocumentFragment();
+    while (hidden.firstChild) {
+        fragment.appendChild(hidden.firstChild);
+    }
+    hidden.replaceWith(fragment);
+}
+
+function ensureHiddenStatusText(mesText, statusText) {
     const target = normalizeTextForMatch(statusText);
     if (!target) {
         return null;
+    }
+
+    const existingHiddenNodes = Array.from(mesText.querySelectorAll(`.${hiddenSourceClass}`));
+    if (existingHiddenNodes.length) {
+        const exactHidden = existingHiddenNodes.find((hidden) => normalizeTextForMatch(hidden.textContent) === target);
+        existingHiddenNodes
+            .filter((hidden) => hidden !== exactHidden)
+            .forEach((hidden) => restoreHiddenSource(hidden));
+
+        if (exactHidden) {
+            return exactHidden;
+        }
     }
 
     const textNodes = getTextNodesForMatch(mesText);
@@ -244,92 +262,82 @@ function hideStatusTextInMessage(mesText, statusText) {
     return hidden;
 }
 
-function placeHostInRenderedMessage(host, rawMessage) {
-    const candidates = [];
-    const currentMesText = getCurrentMessageElement()?.querySelector(".mes_text");
-    if (currentMesText) {
-        candidates.push(currentMesText);
-    }
-    candidates.push(...Array.from(document.querySelectorAll("#chat .mes_text")).reverse());
-
-    const seen = new Set();
-    for (const mesText of candidates) {
-        if (!mesText || seen.has(mesText)) {
-            continue;
-        }
-        seen.add(mesText);
-
-        const statusText = extractStatusBlock(rawMessage) || guessStatusTextFromRenderedMessage(mesText);
-        if (!statusText) {
-            console.debug("[st-local-statusbar] No status text found for message", { rawMessage, mesText });
-            continue;
-        }
-
-        const hidden = hideStatusTextInMessage(mesText, statusText);
-        if (!hidden) {
-            console.debug("[st-local-statusbar] Status text did not match rendered message", { statusText, renderedText: mesText.innerText || mesText.textContent || "" });
-            continue;
-        }
-
-        if (host.parentElement !== mesText || host.nextSibling !== hidden) {
-            hidden.before(host);
-        }
-        return true;
-    }
-
-    console.debug("[st-local-statusbar] Failed to place host in rendered message", { rawMessage });
-    return false;
+function getHostByMesId(mesId) {
+    return document.querySelector(`.${hostClass}[data-mes-id="${CSS.escape(String(mesId))}"]`);
 }
 
-function guessStatusTextFromRenderedMessage(mesText) {
-    const text = mesText.innerText || mesText.textContent || "";
-    const contentText = mesText.querySelector("content")?.textContent || "";
-    if (contentText && text.includes(contentText)) {
-        const idx = text.indexOf(contentText);
-        const rest = text.slice(idx + contentText.length).trim();
-        if (rest) {
-            return rest;
-        }
-    }
+function getFrameByMesId(mesId) {
+    return document.querySelector(`.${frameClass}[data-mes-id="${CSS.escape(String(mesId))}"]`);
+}
 
-    const lines = text.split(/\n+/).map((line) => line.trim()).filter(Boolean);
-    if (lines.length <= 1) {
-        return "";
+function createHost(mesId) {
+    const host = document.createElement("div");
+    host.className = hostClass;
+    host.dataset.mesId = String(mesId);
+    host.setAttribute("data-name", "本地状态栏");
+    host.innerHTML = `
+        <div class="st-local-statusbar-shell">
+            <iframe
+                class="${frameClass}"
+                title="本地状态栏"
+                scrolling="no"
+                loading="eager"
+                referrerpolicy="no-referrer"
+            ></iframe>
+        </div>
+    `;
+
+    const frame = host.querySelector("iframe");
+    if (frame) {
+        frame.dataset.mesId = String(mesId);
     }
-    return lines.slice(1).join("\n").trim();
+    return host;
 }
 
 function updateFrameHeight(frame) {
     if (!frame) {
         return;
     }
+
     try {
         const doc = frame.contentDocument;
         if (!doc) {
             return;
         }
+
         const root = doc.documentElement;
         const body = doc.body;
-        const height = Math.max(
-            root?.scrollHeight || 0,
+        if (root) {
+            root.style.margin = "0";
+            root.style.padding = "0";
+            root.style.overflow = "hidden";
+        }
+        if (body) {
+            body.style.margin = "0";
+            body.style.padding = "0";
+            body.style.overflow = "hidden";
+        }
+
+        const panel = doc.querySelector(".status-panel");
+        const panelRect = panel?.getBoundingClientRect();
+        const panelHeight = panelRect ? Math.ceil(panelRect.height) : 0;
+        const fallbackHeight = Math.ceil(Math.max(
+            body?.firstElementChild?.getBoundingClientRect?.().height || 0,
             body?.scrollHeight || 0,
-            root?.offsetHeight || 0,
-            body?.offsetHeight || 0,
-            140,
-        );
+            root?.scrollHeight || 0,
+        ));
+        const height = Math.max(panelHeight || fallbackHeight, 24);
         frame.style.height = `${height}px`;
     } catch (error) {
         console.warn("[st-local-statusbar] Failed to resize iframe:", error);
     }
 }
 
-function syncFrameMessage(force = false) {
-    const frame = getFrame();
-    if (!frame || !ensureSettings().enabled) {
+function syncFrameMessage(frame, rawMessage, force = false) {
+    if (!frame || !ensureSettings().enabled || !rawMessage) {
         return;
     }
 
-    const rawMessage = getCurrentRawMessage();
     if (!force && frame.__stlsbLastMessage === rawMessage) {
         return;
     }
@@ -352,32 +360,71 @@ function syncFrameMessage(force = false) {
     }
 }
 
-function queueSync(delay = 60, force = false) {
-    if (syncTimer) {
-        clearTimeout(syncTimer);
+function getAllFrames() {
+    return Array.from(document.querySelectorAll(`.${frameClass}`));
+}
+
+function cleanupFrame(frame) {
+    if (!frame) {
+        return;
     }
-    syncTimer = window.setTimeout(() => syncFrameMessage(force), delay);
+
+    try {
+        frame.__statusbarResizeObserver?.disconnect?.();
+    } catch (error) {
+        console.warn("[st-local-statusbar] Failed to disconnect ResizeObserver:", error);
+    }
+}
+
+function destroyHost(host) {
+    if (!host) {
+        return;
+    }
+
+    const frame = host.querySelector(`.${frameClass}`);
+    cleanupFrame(frame);
+    host.remove();
+}
+
+function cleanupMessageState(messageElement) {
+    if (!messageElement) {
+        return;
+    }
+
+    const mesId = messageElement.getAttribute("mesid");
+    if (mesId !== null && typeof mesId !== "undefined") {
+        destroyHost(getHostByMesId(mesId));
+    }
+
+    const mesText = messageElement.querySelector(".mes_text");
+    if (mesText) {
+        Array.from(mesText.querySelectorAll(`.${hiddenSourceClass}`)).forEach((hidden) => restoreHiddenSource(hidden));
+    }
+}
+
+function clearAllMountedStatusbars() {
+    getCharacterMessageElements().forEach((mes) => cleanupMessageState(mes));
+    Array.from(document.querySelectorAll(`.${hostClass}`)).forEach((host) => destroyHost(host));
 }
 
 function bindFrame(frame) {
     if (!frame || frame.dataset.bound === "1") {
         return;
     }
-    frame.dataset.bound = "1";
 
+    frame.dataset.bound = "1";
     const scheduleResize = () => {
         window.requestAnimationFrame(() => updateFrameHeight(frame));
     };
 
     frame.addEventListener("load", () => {
         scheduleResize();
-        syncFrameMessage(true);
+        syncFrameMessage(frame, frame.__stlsbRawMessage || "", true);
+        applyStatusbarSettingsToFrame(frame);
+        frame.classList.add("st-local-statusbar-frame-ready");
 
         try {
-            if (frame.__statusbarResizeObserver) {
-                frame.__statusbarResizeObserver.disconnect();
-            }
-
+            frame.__statusbarResizeObserver?.disconnect?.();
             const observer = new ResizeObserver(() => scheduleResize());
             const doc = frame.contentDocument;
             if (doc?.documentElement) {
@@ -390,83 +437,116 @@ function bindFrame(frame) {
         } catch (error) {
             console.warn("[st-local-statusbar] ResizeObserver unavailable:", error);
         }
-
-        if (frame.__statusbarHeightTimer) {
-            clearInterval(frame.__statusbarHeightTimer);
-        }
-        frame.__statusbarHeightTimer = window.setInterval(() => {
-            scheduleResize();
-            syncFrameMessage();
-        }, 1000);
     });
 }
 
-function createHost() {
-    const host = document.createElement("div");
-    host.id = hostId;
-    host.className = "st-local-statusbar-host";
-    host.setAttribute("data-name", "本地状态栏");
-    host.innerHTML = `
-        <div class="st-local-statusbar-shell">
-            <iframe
-                id="${frameId}"
-                class="st-local-statusbar-frame"
-                title="本地状态栏"
-                scrolling="no"
-                loading="eager"
-                referrerpolicy="no-referrer"
-            ></iframe>
-        </div>
-    `;
-    return host;
-}
-
-function applyEnabledState() {
-    const host = getHost();
-    if (!host) {
+function applyStatusbarSettingsToFrame(frame) {
+    const win = frame?.contentWindow;
+    if (!win) {
         return;
     }
-    host.style.display = ensureSettings().enabled ? "" : "none";
+
+    const settings = ensureSettings();
+    try {
+        win.localStorage.setItem("statusPanelAutoExpand", String(Boolean(settings.autoExpand)));
+        win.localStorage.setItem("statusPanelMaxWidthPct", String(settings.panelWidth));
+        win.localStorage.setItem("statusPanelTextScalePct", String(settings.textScale));
+        win.localStorage.setItem("statusPanelTextWeight", String(settings.textWeight));
+        win.localStorage.setItem("statusPanelTextAlign", settings.textAlign);
+
+        if (typeof win.applyPanelWidth === "function") win.applyPanelWidth();
+        if (typeof win.applyTextScale === "function") win.applyTextScale();
+        if (typeof win.applyTextWeight === "function") win.applyTextWeight();
+        if (typeof win.applyTextAlign === "function") win.applyTextAlign();
+        if (typeof win.applyStartupCollapseState === "function") win.applyStartupCollapseState();
+
+        updateFrameHeight(frame);
+        window.requestAnimationFrame(() => updateFrameHeight(frame));
+    } catch (error) {
+        console.warn("[st-local-statusbar] Failed to apply statusbar settings:", error);
+    }
+}
+
+function applyStatusbarSettingsToAllFrames() {
+    getAllFrames().forEach((frame) => applyStatusbarSettingsToFrame(frame));
 }
 
 async function ensureMounted() {
     const settings = ensureSettings();
-    const rawMessage = getCurrentRawMessage();
-
-    let host = getHost();
-    if (!host) {
-        host = createHost();
-    }
-
-    const placedInMessage = placeHostInRenderedMessage(host, rawMessage);
-    if (!placedInMessage && host.parentElement !== document.body) {
-        document.body.appendChild(host);
-    }
-
-    applyEnabledState();
     if (!settings.enabled) {
+        clearAllMountedStatusbars();
         return;
     }
 
-    const frame = host.querySelector("iframe");
-    bindFrame(frame);
-
     const fragment = await loadFragment();
     const version = `${fragment.length}:${fragment.charCodeAt(0) || 0}`;
-    if (frame.dataset.fragmentVersion !== version) {
-        frame.dataset.fragmentVersion = version;
-        delete frame.__stlsbLastMessage;
-        frame.srcdoc = buildSrcdoc(fragment);
-    } else {
-        updateFrameHeight(frame);
-        queueSync(0, true);
+    const activeMesIds = new Set();
+
+    for (const mes of getCharacterMessageElements()) {
+        const mesId = mes.getAttribute("mesid");
+        const mesText = mes.querySelector(".mes_text");
+
+        if (!mesId || !mesText) {
+            continue;
+        }
+
+        activeMesIds.add(String(mesId));
+        const rawMessage = getRawMessageByDomMessage(mes);
+        const statusText = getStatusTextForMessage(rawMessage, mesText);
+
+        if (!statusText) {
+            cleanupMessageState(mes);
+            continue;
+        }
+
+        const hidden = ensureHiddenStatusText(mesText, statusText);
+        if (!hidden) {
+            cleanupMessageState(mes);
+            continue;
+        }
+
+        let host = getHostByMesId(mesId);
+        if (!host) {
+            host = createHost(mesId);
+        }
+
+        if (host.parentElement !== mesText || host.nextSibling !== hidden) {
+            hidden.before(host);
+        }
+
+        const frame = host.querySelector(`.${frameClass}`);
+        if (!frame) {
+            continue;
+        }
+
+        bindFrame(frame);
+        frame.__stlsbRawMessage = rawMessage;
+
+        if (frame.dataset.fragmentVersion !== version) {
+            frame.dataset.fragmentVersion = version;
+            delete frame.__stlsbLastMessage;
+            frame.classList.remove("st-local-statusbar-frame-ready");
+            frame.srcdoc = buildSrcdoc(fragment, rawMessage);
+        } else {
+            applyStatusbarSettingsToFrame(frame);
+            syncFrameMessage(frame, rawMessage);
+        }
     }
+
+    Array.from(document.querySelectorAll(`.${hostClass}`)).forEach((host) => {
+        const mesId = host.dataset.mesId || "";
+        if (activeMesIds.has(mesId)) {
+            return;
+        }
+        destroyHost(host);
+    });
 }
 
 function queueMount(delay = 80) {
     if (mountTimer) {
         clearTimeout(mountTimer);
     }
+
     mountTimer = window.setTimeout(() => {
         ensureMounted().catch((error) => {
             console.error("[st-local-statusbar] Failed to mount:", error);
@@ -477,56 +557,109 @@ function queueMount(delay = 80) {
 function onEnabledInput(event) {
     ensureSettings().enabled = Boolean($(event.target).prop("checked"));
     saveSettingsDebounced();
-    applyEnabledState();
+
     if (ensureSettings().enabled) {
         queueMount(0);
-        queueSync(120, true);
+        return;
     }
+
+    clearAllMountedStatusbars();
 }
 
 function onReloadClick() {
     fragmentCache = null;
-    const frame = getFrame();
-    if (frame) {
+    getAllFrames().forEach((frame) => {
         delete frame.dataset.fragmentVersion;
         delete frame.__stlsbLastMessage;
-    }
+    });
     queueMount(0);
+
     if (typeof toastr !== "undefined") {
         toastr.success("已重新载入本地状态栏", "本地状态栏");
     }
+}
+
+function onStatusbarSettingInput() {
+    const settings = ensureSettings();
+    settings.autoExpand = Boolean($(`#${autoExpandInputId}`).prop("checked"));
+    settings.panelWidth = Number($(`#${widthInputId}`).val() || defaultSettings.panelWidth);
+    settings.textScale = Number($(`#${textScaleInputId}`).val() || defaultSettings.textScale);
+    settings.textWeight = Number($(`#${textWeightInputId}`).val() || defaultSettings.textWeight);
+    settings.textAlign = String($(`#${textAlignInputId}`).val() || defaultSettings.textAlign);
+    saveSettingsDebounced();
+    applyStatusbarSettingsToAllFrames();
 }
 
 function installDomObserver() {
     if (domObserver) {
         return;
     }
-    domObserver = new MutationObserver(() => {
-        queueMount();
-        queueSync(120);
+
+    const isRelevantNode = (node) => {
+        const el = node instanceof Element ? node : node?.parentElement;
+        if (!el) {
+            return false;
+        }
+        if (el.closest?.(`.${hostClass}, .${hiddenSourceClass}`)) {
+            return false;
+        }
+        return Boolean(
+            el.matches?.('#chat .mes[is_user="false"] .mes_text, #chat .mes[is_user="false"] .mes_text *')
+            || el.closest?.('#chat .mes[is_user="false"] .mes_text')
+        );
+    };
+
+    domObserver = new MutationObserver((mutations) => {
+        const hasRelevantChange = mutations.some((mutation) => {
+            if (isRelevantNode(mutation.target)) {
+                return true;
+            }
+            const added = Array.from(mutation.addedNodes || []);
+            const removed = Array.from(mutation.removedNodes || []);
+            return [...added, ...removed].some((node) => isRelevantNode(node));
+        });
+
+        if (!hasRelevantChange) {
+            return;
+        }
+
+        const onlyOwnChanges = mutations.every((mutation) => {
+            const target = mutation.target instanceof Element ? mutation.target : mutation.target?.parentElement;
+            if (target?.closest?.(`.${hostClass}, .${hiddenSourceClass}`)) {
+                return true;
+            }
+
+            const added = Array.from(mutation.addedNodes || []);
+            const removed = Array.from(mutation.removedNodes || []);
+            return [...added, ...removed].every((node) => {
+                const el = node instanceof Element ? node : node?.parentElement;
+                return Boolean(el?.closest?.(`.${hostClass}, .${hiddenSourceClass}`));
+            });
+        });
+
+        if (onlyOwnChanges) {
+            return;
+        }
+
+        const nextSignature = getCharacterMessageSignature();
+        if (nextSignature === lastCharacterMessageSignature) {
+            return;
+        }
+
+        lastCharacterMessageSignature = nextSignature;
+        queueMount(80);
     });
-    domObserver.observe(document.body, {
+
+    const chatRoot = document.getElementById("chat");
+    if (!chatRoot) {
+        return;
+    }
+
+    domObserver.observe(chatRoot, {
         childList: true,
         subtree: true,
+        characterData: true,
     });
-}
-
-function installEventSourceHooks() {
-    if (eventSourceInstalled) {
-        return;
-    }
-    const evtSrc = window.eventSource;
-    if (!evtSrc || typeof evtSrc.on !== "function") {
-        return;
-    }
-    const trigger = () => {
-        queueMount(50);
-        queueSync(100);
-    };
-    ["generation_ended", "message_updated", "chat_id_changed", "message_sent"].forEach((eventName) => {
-        evtSrc.on(eventName, trigger);
-    });
-    eventSourceInstalled = true;
 }
 
 async function initSettingsUi() {
@@ -541,21 +674,28 @@ async function initSettingsUi() {
     }
 
     $(container).append(settingsHtml);
-    $(`#${enabledInputId}`).on("input", onEnabledInput);
+    $(`#${enabledInputId}`).on("change", onEnabledInput);
+    $(`#${autoExpandInputId}`).on("change", onStatusbarSettingInput);
+    $(`#${widthInputId}, #${textScaleInputId}, #${textWeightInputId}`).on("input change", onStatusbarSettingInput);
+    $(`#${textAlignInputId}`).on("change", onStatusbarSettingInput);
     $(`#${reloadButtonId}`).on("click", onReloadClick);
 }
 
 function syncSettingsUi() {
     const settings = ensureSettings();
     $(`#${enabledInputId}`).prop("checked", settings.enabled);
+    $(`#${autoExpandInputId}`).prop("checked", Boolean(settings.autoExpand));
+    $(`#${widthInputId}`).val(settings.panelWidth);
+    $(`#${textScaleInputId}`).val(settings.textScale);
+    $(`#${textWeightInputId}`).val(settings.textWeight);
+    $(`#${textAlignInputId}`).val(settings.textAlign);
 }
 
 jQuery(async () => {
     ensureSettings();
     await initSettingsUi();
     syncSettingsUi();
+    lastCharacterMessageSignature = getCharacterMessageSignature();
     installDomObserver();
-    installEventSourceHooks();
     queueMount(0);
-    queueSync(150, true);
 });

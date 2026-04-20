@@ -9,9 +9,32 @@
         <input id="st_local_statusbar_enabled" type="checkbox" />
         <span>启用本地状态栏</span>
       </label>
+      <label class="checkbox_label" for="st_local_statusbar_auto_expand">
+        <input id="st_local_statusbar_auto_expand" type="checkbox" />
+        <span>自动展开状态栏</span>
+      </label>
+      <label class="st-local-statusbar-setting-row" for="st_local_statusbar_width">
+        <span>面板宽度(%)</span>
+        <input id="st_local_statusbar_width" type="range" min="40" max="100" />
+      </label>
+      <label class="st-local-statusbar-setting-row" for="st_local_statusbar_text_scale">
+        <span>文本大小(%)</span>
+        <input id="st_local_statusbar_text_scale" type="range" min="75" max="120" />
+      </label>
+      <label class="st-local-statusbar-setting-row" for="st_local_statusbar_text_weight">
+        <span>文本粗细</span>
+        <input id="st_local_statusbar_text_weight" type="range" min="300" max="700" step="50" />
+      </label>
+      <div class="st-local-statusbar-setting-row">
+        <span>文本对齐</span>
+        <select id="st_local_statusbar_text_align">
+          <option value="right">右对齐</option>
+          <option value="left">左对齐</option>
+        </select>
+      </div>
       <input id="st_local_statusbar_reload" class="menu_button" type="button" value="重载状态栏" />
       <small class="notes">
-        当前扩展完全本地加载，启用后会把状态栏插到聊天区最上方。
+        当前扩展完全本地加载，状态栏会出现在原本脚本追加到页面的位置。
       </small>
     </div>
   </div>
