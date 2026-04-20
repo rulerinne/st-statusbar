@@ -20,6 +20,10 @@
   overflow: hidden;
 }
 
+.st-local-statusbar-hidden-source {
+  display: none !important;
+}
+
 .st-local-statusbar-settings {
   margin-top: 8px;
 }
