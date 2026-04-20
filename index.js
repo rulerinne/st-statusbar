@@ -2,9 +2,7 @@ import { extension_settings } from "../../../extensions.js";
 import { saveSettingsDebounced } from "../../../../script.js";
 
 const extensionName = "st-local-statusbar";
-const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
-const fragmentUrl = `${extensionFolderPath}/statusbar.fragment.html`;
-
+const extensionBaseUrl = new URL(".", import.meta.url);
 const hostId = "st-local-statusbar-host";
 const frameId = "st-local-statusbar-frame";
 const enabledInputId = "st_local_statusbar_enabled";
@@ -17,6 +15,10 @@ const defaultSettings = {
 let fragmentCache = null;
 let mountTimer = null;
 let domObserver = null;
+
+function fileUrl(name) {
+    return new URL(name, extensionBaseUrl).href;
+}
 
 function getSettings() {
     extension_settings[extensionName] = extension_settings[extensionName] || {};
@@ -33,24 +35,13 @@ function ensureSettings() {
     return settings;
 }
 
-function buildSrcdoc(fragment) {
-    return `<!doctype html><html lang="zh-CN">${fragment}</html>`;
+function getChatEl() {
+    return document.getElementById("chat");
 }
 
-async function loadFragment() {
-    if (fragmentCache !== null) {
-        return fragmentCache;
-    }
-    fragmentCache = await $.get(fragmentUrl);
-    return fragmentCache;
-}
-
-function getChatMountTarget() {
-    const chat = document.getElementById("chat");
-    if (!chat || !chat.parentElement) {
-        return null;
-    }
-    return { chat, parent: chat.parentElement };
+function getSettingsContainer() {
+    return document.getElementById("extensions_settings")
+        || document.getElementById("extensions_settings2");
 }
 
 function getHost() {
@@ -61,12 +52,16 @@ function getFrame() {
     return document.getElementById(frameId);
 }
 
-function applyEnabledState() {
-    const host = getHost();
-    if (!host) {
-        return;
+function buildSrcdoc(fragment) {
+    return `<!doctype html><html lang="zh-CN">${fragment}</html>`;
+}
+
+async function loadFragment() {
+    if (fragmentCache !== null) {
+        return fragmentCache;
     }
-    host.hidden = !ensureSettings().enabled;
+    fragmentCache = await $.get(fileUrl("statusbar.fragment.html"));
+    return fragmentCache;
 }
 
 function updateFrameHeight(frame) {
@@ -85,7 +80,7 @@ function updateFrameHeight(frame) {
             body?.scrollHeight || 0,
             root?.offsetHeight || 0,
             body?.offsetHeight || 0,
-            120,
+            140,
         );
         frame.style.height = `${height}px`;
     } catch (error) {
@@ -111,15 +106,15 @@ function bindFrame(frame) {
                 frame.__statusbarResizeObserver.disconnect();
             }
 
-            const ro = new ResizeObserver(() => scheduleResize());
+            const observer = new ResizeObserver(() => scheduleResize());
             const doc = frame.contentDocument;
             if (doc?.documentElement) {
-                ro.observe(doc.documentElement);
+                observer.observe(doc.documentElement);
             }
             if (doc?.body) {
-                ro.observe(doc.body);
+                observer.observe(doc.body);
             }
-            frame.__statusbarResizeObserver = ro;
+            frame.__statusbarResizeObserver = observer;
         } catch (error) {
             console.warn("[st-local-statusbar] ResizeObserver unavailable:", error);
         }
@@ -127,14 +122,15 @@ function bindFrame(frame) {
         if (frame.__statusbarHeightTimer) {
             clearInterval(frame.__statusbarHeightTimer);
         }
-        frame.__statusbarHeightTimer = window.setInterval(scheduleResize, 800);
+        frame.__statusbarHeightTimer = window.setInterval(scheduleResize, 1000);
     });
 }
 
 function createHost() {
     const host = document.createElement("div");
     host.id = hostId;
-    host.className = "st-local-statusbar-host";
+    host.className = "mes st-local-statusbar-host";
+    host.setAttribute("data-name", "本地状态栏");
     host.innerHTML = `
         <div class="st-local-statusbar-shell">
             <iframe
@@ -150,10 +146,18 @@ function createHost() {
     return host;
 }
 
+function applyEnabledState() {
+    const host = getHost();
+    if (!host) {
+        return;
+    }
+    host.style.display = ensureSettings().enabled ? "" : "none";
+}
+
 async function ensureMounted() {
     const settings = ensureSettings();
-    const mount = getChatMountTarget();
-    if (!mount) {
+    const chat = getChatEl();
+    if (!chat) {
         return;
     }
 
@@ -162,8 +166,10 @@ async function ensureMounted() {
         host = createHost();
     }
 
-    if (host.parentElement !== mount.parent || host.nextElementSibling !== mount.chat) {
-        mount.parent.insertBefore(host, mount.chat);
+    if (host.parentElement !== chat) {
+        chat.prepend(host);
+    } else if (chat.firstElementChild !== host) {
+        chat.prepend(host);
     }
 
     applyEnabledState();
@@ -196,11 +202,10 @@ function queueMount(delay = 80) {
 }
 
 function onEnabledInput(event) {
-    const settings = ensureSettings();
-    settings.enabled = Boolean($(event.target).prop("checked"));
+    ensureSettings().enabled = Boolean($(event.target).prop("checked"));
     saveSettingsDebounced();
     applyEnabledState();
-    if (settings.enabled) {
+    if (ensureSettings().enabled) {
         queueMount(0);
     }
 }
@@ -212,7 +217,9 @@ function onReloadClick() {
         delete frame.dataset.fragmentVersion;
     }
     queueMount(0);
-    toastr.success("已重新载入本地状态栏", "本地状态栏");
+    if (typeof toastr !== "undefined") {
+        toastr.success("已重新载入本地状态栏", "本地状态栏");
+    }
 }
 
 function installDomObserver() {
@@ -227,8 +234,17 @@ function installDomObserver() {
 }
 
 async function initSettingsUi() {
-    const settingsHtml = await $.get(`${extensionFolderPath}/settings.html`);
-    $("#extensions_settings2").append(settingsHtml);
+    if (document.getElementById(enabledInputId)) {
+        return;
+    }
+
+    const settingsHtml = await $.get(fileUrl("settings.html"));
+    const container = getSettingsContainer();
+    if (!container) {
+        throw new Error("Settings container not found");
+    }
+
+    $(container).append(settingsHtml);
     $(`#${enabledInputId}`).on("input", onEnabledInput);
     $(`#${reloadButtonId}`).on("click", onReloadClick);
 }
