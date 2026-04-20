@@ -1,5 +1,6 @@
 .st-local-statusbar-host {
-  display: block;
+  display: inline-block;
+  vertical-align: top;
   width: 100%;
   margin: 0;
   padding: 0;
@@ -8,11 +9,30 @@
   box-shadow: none;
 }
 
-.st-local-statusbar-shell {
+.st-local-cot-host {
+  display: inline-block;
+  vertical-align: top;
   width: 100%;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
 }
 
 .st-local-statusbar-frame {
+  display: block;
+  width: 100%;
+  height: 24px;
+  min-height: 0;
+  border: 0;
+  background: transparent;
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+
+.st-local-cot-frame {
   display: block;
   width: 100%;
   height: 24px;
@@ -28,7 +48,15 @@
   opacity: 1;
 }
 
+.st-local-cot-frame.st-local-cot-frame-ready {
+  opacity: 1;
+}
+
 .st-local-statusbar-hidden-source {
+  display: none !important;
+}
+
+.st-local-cot-hidden-source {
   display: none !important;
 }
 

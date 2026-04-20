@@ -1,0 +1,230 @@
+```html
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Aether - 折叠栏（静态版）</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+
+      body {
+        font-family: 'Microsoft YaHei', Arial, sans-serif;
+        background: transparent;
+        padding: 6px;
+        margin: 0;
+        display: flex;
+        align-items: flex-start;
+        justify-content: center;
+      }
+
+      .aether-collapsible {
+        width: 100%;
+        background: linear-gradient(140deg, rgba(14,16,28,0.95), rgba(30,16,48,0.9));
+        border-radius: 18px;
+        border: 1px solid rgba(180, 160, 255, 0.18);
+        overflow: hidden;
+        box-shadow: 0 3px 5px rgba(72, 44, 120, 0.35),
+          inset 0 0 0 1px rgba(255, 255, 255, 0.06),
+          inset 0 -2px 3px rgba(255, 255, 255, 0.04);
+        position: relative;
+      }
+
+      .aether-header {
+        position: relative;
+        padding: 14px 16px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        background: linear-gradient(135deg, rgba(28,24,44,0.6), rgba(36,24,58,0.55));
+        border-bottom: 1px solid rgba(180, 160, 255, 0.16);
+        outline: none;
+      }
+      .aether-header:hover {
+        background: linear-gradient(135deg, rgba(30,26,48,0.75), rgba(40,26,62,0.7));
+      }
+
+      .aether-title {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 16px;
+        font-weight: 700;
+        color: #e9e3ff;
+        letter-spacing: 0.3px;
+        text-shadow: 0 1px 2px rgba(0,0,0,0.35);
+        position: relative;
+      }
+
+      .moon-svg {
+        width: 22px;
+        height: 22px;
+        display: block;
+      }
+
+      .toggle-icon {
+        width: 28px;
+        height: 28px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        /* 静态星形，无动画 */
+        clip-path: polygon(50% 0%, 61.8% 38.2%, 100% 50%, 61.8% 61.8%, 50% 100%, 38.2% 61.8%, 0% 50%, 38.2% 38.2%);
+        background:
+          radial-gradient(circle at center, rgba(255,255,255,0.15) 0%, transparent 70%),
+          linear-gradient(135deg, rgba(141,121,222,0.6), rgba(109,97,184,0.4));
+      }
+
+      /* 内容区：纯显示/隐藏，无过渡动画 */
+      .aether-content { display: none; background: rgba(18,16,28,0.5); }
+      .aether-collapsible.expanded .aether-content { display: block; }
+
+      .aether-content-inner {
+        padding: 18px;
+        color: #d8d3f6;
+        line-height: 1.65;
+        font-size: 14px;
+        border-top: 1px solid rgba(180,160,255,0.12);
+        position: relative;
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 300px;
+        overflow-y: auto;
+        text-shadow: 0 1px 1px rgba(0,0,0,0.25);
+      }
+
+      /* 自定义滚动条（静态） */
+      .aether-content-inner::-webkit-scrollbar { width: 6px; }
+      .aether-content-inner::-webkit-scrollbar-track {
+        background: rgba(30, 26, 48, 0.4);
+        border-radius: 3px;
+      }
+      .aether-content-inner::-webkit-scrollbar-thumb {
+        background: linear-gradient(180deg, #8b79de, #6d61b8);
+        border-radius: 3px;
+        box-shadow: 0 0 4px rgba(120, 90, 190, 0.3);
+      }
+      .aether-content-inner::before {
+        content: '✧';
+        position: absolute;
+        top: 10px;
+        right: 14px;
+        font-size: 12px;
+        color: #cbb8ff;
+        opacity: 0.7;
+        filter: drop-shadow(0 0 4px rgba(150,120,240,0.6));
+      }
+
+      .aether-collapse {
+        padding: 12px 18px;
+        text-align: center;
+        color: #b8a5ff;
+        font-size: 13px;
+        cursor: pointer;
+        border-top: 1px solid rgba(180, 160, 255, 0.08);
+        user-select: none;
+        background: linear-gradient(180deg, rgba(18,16,28,0.3), rgba(18,16,28,0.6));
+      }
+      .aether-collapse:hover {
+        color: #d8d3f6;
+        background: linear-gradient(180deg, rgba(22,18,32,0.5), rgba(22,18,32,0.8));
+      }
+
+      @media (max-width: 480px) {
+        .aether-collapsible { max-width: 100%; margin: 0 5px; border-radius: 16px; }
+        .aether-header { padding: 12px 14px; }
+        .aether-title { font-size: 15px; gap: 8px; }
+        .moon-svg { width: 20px; height: 20px; }
+        .aether-content-inner { padding: 14px; font-size: 13px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="aether-collapsible" id="aetherCollapsible">
+      <div
+        class="aether-header"
+        onclick="toggleCollapsible()"
+        role="button"
+        aria-expanded="false"
+        aria-controls="aetherContent"
+        tabindex="0"
+      >
+        <div class="aether-title">
+          <span aria-hidden="true">
+            <svg class="moon-svg" viewBox="0 0 64 64" aria-hidden="true">
+              <defs>
+                <radialGradient id="crescentGrad" cx="32%" cy="34%" r="70%">
+                  <stop offset="0%" stop-color="#ffffff" />
+                  <stop offset="42%" stop-color="#f6f2ff" />
+                  <stop offset="78%" stop-color="#cec1ff" />
+                  <stop offset="100%" stop-color="#b59fff" />
+                </radialGradient>
+                <filter id="moonGlow" x="-80%" y="-80%" width="260%" height="260%">
+                  <feGaussianBlur stdDeviation="2.8" result="blur" />
+                  <feMerge>
+                    <feMergeNode in="blur" />
+                    <feMergeNode in="SourceGraphic" />
+                  </feMerge>
+                </filter>
+                <mask id="crescentMask">
+                  <rect x="0" y="0" width="64" height="64" fill="black" />
+                  <circle cx="28" cy="32" r="22" fill="white" />
+                  <circle cx="39" cy="28" r="22" fill="black" />
+                </mask>
+              </defs>
+              <g filter="url(#moonGlow)">
+                <circle cx="28" cy="32" r="22" fill="url(#crescentGrad)" mask="url(#crescentMask)" />
+                <circle cx="28" cy="32" r="22" fill="none" stroke="rgba(255,255,255,0.35)" stroke-width="0.7" mask="url(#crescentMask)"/>
+                <g opacity="0.25" mask="url(#crescentMask)">
+                  <circle cx="22" cy="26" r="1.2" fill="#fff" />
+                  <circle cx="24.5" cy="34" r="0.9" fill="#efe9ff" />
+                  <circle cx="30" cy="29" r="0.7" fill="#fff" />
+                </g>
+              </g>
+            </svg>
+          </span>
+          Aether
+        </div>
+        <div class="toggle-icon" aria-hidden="true"></div>
+      </div>
+
+      <div class="aether-content" id="aetherContent">
+        <div class="aether-content-inner">$1</div>
+        <div class="aether-collapse" onclick="toggleCollapsible()">收起</div>
+      </div>
+    </div>
+
+    <script>
+      function toggleCollapsible() {
+        const collapsible = document.getElementById('aetherCollapsible');
+        const header = collapsible.querySelector('.aether-header');
+        const isExpanded = collapsible.classList.toggle('expanded');
+        header.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+        updateIframeHeight();
+      }
+
+      function updateIframeHeight() {
+        const bodyHeight = document.body.scrollHeight;
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage({ type: 'resizeIframe', height: bodyHeight }, '*');
+        }
+      }
+
+      document.addEventListener('keydown', function (event) {
+        if (event.key === 'Enter' || event.key === ' ') {
+          const activeElement = document.activeElement;
+          if (activeElement && activeElement.classList.contains('aether-header')) {
+            event.preventDefault();
+            toggleCollapsible();
+          }
+        }
+      });
+      document.querySelector('.aether-header').setAttribute('tabindex', '0');
+
+      window.addEventListener('load', updateIframeHeight);
+    </script>
+  </body>
+</html>
+```
