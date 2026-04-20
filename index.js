@@ -1,4 +1,4 @@
-import { extension_settings } from "../../../extensions.js";
+import { extension_settings, getContext } from "../../../extensions.js";
 import { saveSettingsDebounced } from "../../../../script.js";
 
 const extensionName = "st-local-statusbar";
@@ -58,6 +58,26 @@ function getFrame() {
     return document.getElementById(frameId);
 }
 
+function getContextSafe() {
+    try {
+        if (typeof getContext === "function") {
+            return getContext();
+        }
+    } catch (error) {
+        console.warn("[st-local-statusbar] getContext import failed:", error);
+    }
+
+    try {
+        if (globalThis.SillyTavern?.getContext) {
+            return globalThis.SillyTavern.getContext();
+        }
+    } catch (error) {
+        console.warn("[st-local-statusbar] SillyTavern.getContext failed:", error);
+    }
+
+    return null;
+}
+
 function normalizeTextForMatch(text) {
     return String(text || "").replace(/\s+/g, "");
 }
@@ -89,6 +109,29 @@ async function loadFragment() {
 }
 
 function getCurrentRawMessage() {
+    const domMessage = getCurrentMessageElement();
+    const mesId = domMessage?.getAttribute("mesid");
+    const swipeId = Number(domMessage?.getAttribute("swipeid") || "0");
+
+    const context = getContextSafe();
+    const chat = Array.isArray(context?.chat) ? context.chat : null;
+    if (chat && mesId !== null && typeof mesId !== "undefined") {
+        const item = chat[Number(mesId)];
+        const swipeText = Array.isArray(item?.swipes) ? item.swipes[Number.isFinite(swipeId) ? swipeId : 0] : "";
+        const raw = swipeText || item?.mes || item?.message || item?.text || "";
+        if (typeof raw === "string") {
+            return raw;
+        }
+    }
+
+    if (chat?.length) {
+        const item = chat[chat.length - 1];
+        const raw = item?.mes || item?.message || item?.text || "";
+        if (typeof raw === "string") {
+            return raw;
+        }
+    }
+
     try {
         if (typeof window.getCurrentMessageId !== "function" || typeof window.getChatMessages !== "function") {
             return "";
@@ -202,11 +245,6 @@ function hideStatusTextInMessage(mesText, statusText) {
 }
 
 function placeHostInRenderedMessage(host, rawMessage) {
-    const statusText = extractStatusBlock(rawMessage);
-    if (!statusText) {
-        return false;
-    }
-
     const candidates = [];
     const currentMesText = getCurrentMessageElement()?.querySelector(".mes_text");
     if (currentMesText) {
@@ -221,8 +259,15 @@ function placeHostInRenderedMessage(host, rawMessage) {
         }
         seen.add(mesText);
 
+        const statusText = extractStatusBlock(rawMessage) || guessStatusTextFromRenderedMessage(mesText);
+        if (!statusText) {
+            console.debug("[st-local-statusbar] No status text found for message", { rawMessage, mesText });
+            continue;
+        }
+
         const hidden = hideStatusTextInMessage(mesText, statusText);
         if (!hidden) {
+            console.debug("[st-local-statusbar] Status text did not match rendered message", { statusText, renderedText: mesText.innerText || mesText.textContent || "" });
             continue;
         }
 
@@ -232,7 +277,26 @@ function placeHostInRenderedMessage(host, rawMessage) {
         return true;
     }
 
+    console.debug("[st-local-statusbar] Failed to place host in rendered message", { rawMessage });
     return false;
+}
+
+function guessStatusTextFromRenderedMessage(mesText) {
+    const text = mesText.innerText || mesText.textContent || "";
+    const contentText = mesText.querySelector("content")?.textContent || "";
+    if (contentText && text.includes(contentText)) {
+        const idx = text.indexOf(contentText);
+        const rest = text.slice(idx + contentText.length).trim();
+        if (rest) {
+            return rest;
+        }
+    }
+
+    const lines = text.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+    if (lines.length <= 1) {
+        return "";
+    }
+    return lines.slice(1).join("\n").trim();
 }
 
 function updateFrameHeight(frame) {
