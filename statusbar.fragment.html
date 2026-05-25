@@ -1035,15 +1035,18 @@
       // Parser & Observer
       function getCurrentMessage() {
         // 尝试在当前窗口或父窗口寻找 ST 接口
-        const ctx = (typeof window.getCurrentMessageId === 'function') ? window : 
+        const ctx = (typeof window.getCurrentMessageId === 'function') ? window :
                    ((window.parent && typeof window.parent.getCurrentMessageId === 'function') ? window.parent : null);
         
         if (!ctx || typeof ctx.getChatMessages !== 'function') return null;
         
-        const d = ctx.getChatMessages(ctx.getCurrentMessageId()); 
+        const d = ctx.getChatMessages(ctx.getCurrentMessageId());
         return Array.isArray(d) ? d[0] : d;
       }
       function hashStr(s) { let h=0; for(let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))|0; return h.toString(); }
+      function stripDanglingMarkdownEdgeSymbols(s) {
+        return String(s || '').replace(/^[\s*_~`]+/, '').replace(/[\s*_~`]+$/, '').trim();
+      }
       function parseStatusContent(c) {
         const d={}; 
         let rolePrefix = null;
@@ -1102,7 +1105,7 @@
             if(msg) {
                 const win = msg.length>5000 ? msg.slice(-5000) : msg;
                 const m = win.match(/<(Status|StatusBlock|Status_block)>\s*([\s\S]*?)\s*<\/\1>/i);
-                if(m) content = m[2];
+                if(m) content = stripDanglingMarkdownEdgeSymbols(m[2]);
             }
         } catch(e){}
         if(!content) { try{ const t=document.querySelectorAll('Status, StatusBlock, Status_block'); if(t.length) content=t[t.length-1].innerHTML; }catch(e){} }
