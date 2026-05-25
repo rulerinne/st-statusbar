@@ -40,6 +40,9 @@ let statusFragmentCache = null;
 let cotFragmentCache = null;
 let mountTimer = null;
 let domObserver = null;
+let domObserverRoot = null;
+let initialRetryTimers = [];
+let eventHooksInstalled = false;
 let lastCharacterMessageSignature = "";
 
 function fileUrl(name) {
@@ -99,14 +102,27 @@ function getNormalizedMatchCandidates(text) {
     const candidates = [
         normalizeTextForMatch(text),
         normalizeTextForMatch(stripMarkdownEmphasis(text)),
+        normalizeTextForMatch(stripDanglingMarkdownEdgeSymbols(text)),
+        normalizeTextForMatch(stripMarkdownEmphasis(stripDanglingMarkdownEdgeSymbols(text))),
     ].filter(Boolean);
     return Array.from(new Set(candidates));
+}
+
+function stripDanglingMarkdownEdgeSymbols(text) {
+    return String(text || "")
+        .replace(/^[\s*_~`]+/, "")
+        .replace(/[\s*_~`]+$/, "")
+        .trim();
 }
 
 function stripHtmlToText(html) {
     const div = document.createElement("div");
     div.innerHTML = String(html || "").replace(/<\s*br\s*\/?>/gi, "\n");
     return div.textContent || div.innerText || "";
+}
+
+function normalizeExtractedStatusContent(content) {
+    return stripDanglingMarkdownEdgeSymbols(stripHtmlToText(content)).trim();
 }
 
 function stripMarkdownCodeFence(content) {
@@ -135,8 +151,8 @@ function escapeScriptString(value) {
 }
 
 function extractStatusBlock(rawMessage) {
-    const match = String(rawMessage || "").match(/<[Ss]tatus(?:[Bb]lock)?>([\s\S]*?)<\/[Ss]tatus(?:[Bb]lock)?>/);
-    return match ? stripHtmlToText(match[1]).trim() : "";
+    const match = String(rawMessage || "").match(/<(Status|StatusBlock|Status_block)>\s*([\s\S]*?)\s*<\/\1>/i);
+    return match ? normalizeExtractedStatusContent(match[2]) : "";
 }
 
 function extractCotBlock(rawMessage) {
@@ -188,6 +204,10 @@ function getCharacterMessageElements() {
     return Array.from(document.querySelectorAll('#chat .mes[is_user="false"]')).reverse();
 }
 
+function getChatRoot() {
+    return document.getElementById("chat");
+}
+
 function getRawMessageByDomMessage(domMessage) {
     const mesId = domMessage?.getAttribute("mesid");
     const swipeId = Number(domMessage?.getAttribute("swipeid") || "0");
@@ -235,8 +255,14 @@ function getStatusTextForMessage(rawMessage, mesText) {
     return "";
 }
 
-function getCotTextForMessage(rawMessage) {
-    return extractCotBlock(rawMessage);
+function getCotTextForMessage(rawMessage, mesText = null) {
+    const extracted = extractCotBlock(rawMessage);
+    if (extracted) {
+        return extracted;
+    }
+
+    const domText = mesText?.textContent || "";
+    return extractCotBlock(domText);
 }
 
 function getCotAnchorText(mesText) {
@@ -774,7 +800,7 @@ async function mountCotForMessage(mes, cotFragment) {
     }
 
     const rawMessage = getRawMessageByDomMessage(mes);
-    const cotText = getCotTextForMessage(rawMessage);
+    const cotText = getCotTextForMessage(rawMessage, mesText);
     if (!cotText) {
         destroyHost(getCotHostByMesId(mesId));
         clearHiddenNodes(mesText, `.${cotHiddenSourceClass}`);
@@ -867,6 +893,44 @@ function queueMount(delay = 80) {
     }, delay);
 }
 
+function queueInitialMountRetries() {
+    initialRetryTimers.forEach((timer) => clearTimeout(timer));
+    initialRetryTimers = [120, 350, 800, 1500, 3000].map((delay) => window.setTimeout(() => {
+        installDomObserver();
+        installEventHooks();
+        queueMount(0);
+    }, delay));
+}
+
+function installEventHooks() {
+    if (eventHooksInstalled) {
+        return;
+    }
+
+    const context = getContextSafe();
+    const eventSource = context?.eventSource || globalThis.eventSource;
+    if (!eventSource || typeof eventSource.on !== "function") {
+        return;
+    }
+
+    const remount = () => {
+        lastCharacterMessageSignature = "";
+        queueMount(0);
+        queueInitialMountRetries();
+    };
+
+    [
+        "app_ready",
+        "chat_changed",
+        "chat_id_changed",
+        "message_received",
+        "message_updated",
+        "message_swiped",
+        "generation_ended",
+    ].forEach((eventName) => eventSource.on(eventName, remount));
+    eventHooksInstalled = true;
+}
+
 function onEnabledInput(event) {
     ensureSettings().enabled = Boolean($(event.target).prop("checked"));
     saveSettingsDebounced();
@@ -909,7 +973,13 @@ function onStatusbarSettingInput() {
 }
 
 function installDomObserver() {
-    if (domObserver) {
+    const chatRoot = getChatRoot();
+    const observeRoot = chatRoot || document.body;
+    if (!observeRoot) {
+        return false;
+    }
+
+    if (domObserver && domObserverRoot === observeRoot) {
         return;
     }
 
@@ -918,16 +988,34 @@ function installDomObserver() {
         if (!el) {
             return false;
         }
+        if (!chatRoot) {
+            return Boolean(
+                el.id === "chat"
+                || el.querySelector?.("#chat")
+            );
+        }
         if (el.closest?.(`.${statusHostClass}, .${statusHiddenSourceClass}, .${cotHostClass}, .${cotHiddenSourceClass}`)) {
             return false;
         }
         return Boolean(
-            el.matches?.('#chat .mes[is_user="false"] .mes_text, #chat .mes[is_user="false"] .mes_text *')
+            el.matches?.('#chat .mes[is_user="false"], #chat .mes[is_user="false"] .mes_text, #chat .mes[is_user="false"] .mes_text *')
+            || el.querySelector?.('.mes[is_user="false"], .mes[is_user="false"] .mes_text')
+            || el.closest?.('#chat .mes[is_user="false"]')
             || el.closest?.('#chat .mes[is_user="false"] .mes_text')
         );
     };
 
+    domObserver?.disconnect?.();
     domObserver = new MutationObserver((mutations) => {
+        const chatAppeared = !chatRoot && getChatRoot();
+        if (chatAppeared) {
+            installDomObserver();
+            lastCharacterMessageSignature = "";
+            queueMount(0);
+            queueInitialMountRetries();
+            return;
+        }
+
         const hasRelevantChange = mutations.some((mutation) => {
             if (isRelevantNode(mutation.target)) {
                 return true;
@@ -968,16 +1056,13 @@ function installDomObserver() {
         queueMount(80);
     });
 
-    const chatRoot = document.getElementById("chat");
-    if (!chatRoot) {
-        return;
-    }
-
-    domObserver.observe(chatRoot, {
+    domObserver.observe(observeRoot, {
         childList: true,
         subtree: true,
-        characterData: true,
+        characterData: Boolean(chatRoot),
     });
+    domObserverRoot = observeRoot;
+    return true;
 }
 
 async function initSettingsUi() {
@@ -1017,5 +1102,7 @@ jQuery(async () => {
     syncSettingsUi();
     lastCharacterMessageSignature = getCharacterMessageSignature();
     installDomObserver();
+    installEventHooks();
     queueMount(0);
+    queueInitialMountRetries();
 });
