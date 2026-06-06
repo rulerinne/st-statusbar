@@ -28,12 +28,12 @@
       @keyframes slideUpFade { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
       @keyframes pulseGlow { 0% { box-shadow: 0 0 5px rgba(var(--accent-rgb), 0.2); } 50% { box-shadow: 0 0 15px rgba(var(--accent-rgb), 0.5); } 100% { box-shadow: 0 0 5px rgba(var(--accent-rgb), 0.2); } }
       
-      .val-update { animation: none; }
-      .animate-entry { animation: none; opacity: 1; }
-      .animate-entry:nth-child(1) { animation-delay: 0s; }
-      .animate-entry:nth-child(2) { animation-delay: 0s; }
-      .animate-entry:nth-child(3) { animation-delay: 0s; }
-      .animate-entry:nth-child(4) { animation-delay: 0s; }
+      .val-update { animation: pulseUpdate 0.8s ease-out; }
+      .animate-entry { animation: slideUpFade 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) forwards; opacity: 0; }
+      .animate-entry:nth-child(1) { animation-delay: 0.05s; }
+      .animate-entry:nth-child(2) { animation-delay: 0.1s; }
+      .animate-entry:nth-child(3) { animation-delay: 0.15s; }
+      .animate-entry:nth-child(4) { animation-delay: 0.2s; }
 
       @media (prefers-reduced-motion: reduce) {
         .val-update, .animate-entry, .tab-content.active, .tab-button.active, .panel-title { animation: none !important; }
@@ -136,6 +136,12 @@
       .sheet-close { width: 32px; height: 32px; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; background: transparent; color: var(--text-secondary); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.2s; }
       .sheet-close:hover { background: rgba(255,255,255,0.1); color: #fff; }
       
+      .settings-item { display: grid; grid-template-columns: minmax(118px, 1fr) minmax(130px, 180px); align-items: center; gap: 14px; font-size: 14px; color: var(--text-primary); margin-bottom: 14px; padding: 4px 0; }
+      .settings-item label { color: var(--text-secondary); font-weight: 500; min-width: 0; }
+      .settings-item select, .settings-item input[type="range"], .settings-item input[type="checkbox"] { cursor: pointer; justify-self: end; max-width: 100%; }
+      .settings-item input[type="range"] { width: 100%; min-width: 0; }
+      .settings-item input[type="checkbox"] { width: 14px; height: 14px; }
+      .settings-item select { width: 78px; background: rgba(0,0,0,0.3); color: #fff; border: 1px solid rgba(255,255,255,0.2); padding: 4px 8px; border-radius: 4px; }
       .detail-sheet { width: min(420px, 86%); padding: 14px; border-radius: 12px; }
       .detail-sheet .sheet-header { margin-bottom: 12px; padding-bottom: 8px; font-size: 0.95em; }
       .detail-sheet .sheet-close { width: 26px; height: 26px; border-radius: 6px; }
@@ -455,8 +461,8 @@
         .desktop-only { display: none; }
         
         .unit-loc { order: 1; }
-        .unit-weather { order: 2; margin-left: 0; }
-        .unit-time { order: 3; flex-basis: 100%; justify-content: flex-start; margin-top: 2px; text-align: left; }
+        .unit-weather { order: 2; margin-left: 4px; }
+        .unit-time { order: 3; flex-basis: 100%; justify-content: center; margin-top: 2px; }
         .weather-label { display: none; }
       }
       
@@ -482,6 +488,10 @@
         .attire-cell-label { font-size: 0.65rem; margin-bottom: 2px; }
         .attire-cell-value { font-size: 0.75rem; }
         .settings-sheet { width: calc(100vw - 16px); max-width: calc(100vw - 16px); padding: 12px; }
+        .settings-item { grid-template-columns: 1fr; gap: 6px; margin-bottom: 12px; }
+        .settings-item select, .settings-item input[type="range"], .settings-item input[type="checkbox"] { justify-self: stretch; }
+        .settings-item input[type="checkbox"] { justify-self: end; }
+        .settings-item select { width: 100%; }
       }
     </style>
   </head>
@@ -494,6 +504,7 @@
         </div>
         <div class="control-buttons">
           <button class="control-btn" onclick="toggleCollapse()" title="折叠/展开"><span data-icon="compress"></span></button>
+          <button class="control-btn" onclick="toggleSettings()" title="设置"><span data-icon="cog"></span></button>
         </div>
         <div class="header-info">
           <span class="info-unit unit-loc"><span class="kv-label">地点：</span><span id="scene-location" class="kv-value"></span></span>
@@ -545,6 +556,19 @@
         </div>
       </div>
 
+      <div id="settings-overlay" class="settings-overlay">
+        <div class="settings-backdrop" onclick="toggleSettings()"></div>
+        <div class="settings-sheet">
+          <div class="sheet-header"><span>状态栏设置</span><button class="sheet-close" onclick="toggleSettings()"><span data-icon="times"></span></button></div>
+          <div class="sheet-body">
+            <div class="settings-item"><label>自动展开状态栏</label><input id="auto-expand-toggle" type="checkbox" onchange="onAutoExpandChange(this.checked)" /></div>
+            <div class="settings-item"><label>面板宽度(%)</label><input id="panel-width-input" type="range" min="40" max="100" onchange="onPanelWidthChange(this.value)" /></div>
+            <div class="settings-item"><label>文本大小(%)</label><input id="text-scale-input" type="range" min="75" max="120" onchange="onTextScaleChange(this.value)" /></div>
+            <div class="settings-item"><label>文本粗细</label><input id="text-weight-input" type="range" min="300" max="700" step="50" onchange="onTextWeightChange(this.value)" /></div>
+            <div class="settings-item"><label>文本对齐</label><select id="text-align-select" onchange="onTextAlignChange(this.value)"><option value="right">右对齐</option><option value="left">左对齐</option></select></div>
+          </div>
+        </div>
+      </div>
       <div id="detail-overlay" class="settings-overlay">
         <div class="settings-backdrop" onclick="closeDetailOverlay()"></div>
         <div class="settings-sheet detail-sheet">
@@ -627,6 +651,18 @@
         const p = getStatusPanelEl(), btn = document.querySelector('.control-btn[onclick="toggleCollapse()"]');
         p?.classList.toggle('collapsed', isCollapsed);
         if(btn) btn.innerHTML = getIcon(isCollapsed ? 'expand' : 'compress');
+      }
+      function toggleSettings() {
+        const o = document.getElementById('settings-overlay');
+        o?.classList.toggle('open');
+        if(o?.classList.contains('open')) {
+            ensureExpanded();
+            document.getElementById('auto-expand-toggle').checked = loadAutoExpandSetting();
+            document.getElementById('panel-width-input').value = loadPanelWidth();
+            document.getElementById('text-scale-input').value = loadTextScalePct();
+            document.getElementById('text-weight-input').value = loadTextWeight();
+            document.getElementById('text-align-select').value = loadTextAlign();
+        }
       }
       function escapeHtml(v) {
         return String(v ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
@@ -894,7 +930,6 @@
                     <div class="crh-stats-row">
                       <div class="crh-stat-item"><div class="crh-stat-val" style="font-size: 0.92rem; color: var(--accent-color); order: 1;">当前位置</div><div id="${roleId}-position" class="crh-stat-lbl" style="font-size: 0.76rem; color: var(--text-primary); text-transform: none; margin-top:2px; font-weight: 400; letter-spacing: 0; order: 2;"></div></div>
                       <div class="crh-stat-item"><div class="crh-stat-val" style="font-size: 0.92rem; color: var(--accent-color); order: 1;">当前动作</div><div id="${roleId}-action" class="crh-stat-lbl" style="font-size: 0.76rem; color: var(--text-primary); text-transform: none; margin-top:2px; font-weight: 400; letter-spacing: 0; order: 2;"></div></div>
-                      <div class="crh-stat-item"><div class="crh-stat-val" style="font-size: 0.92rem; color: var(--accent-color); order: 1;">状态</div><div id="${roleId}-status" class="crh-stat-lbl" style="font-size: 0.76rem; color: var(--text-primary); text-transform: none; margin-top:2px; font-weight: 400; letter-spacing: 0; order: 2;"></div></div>
                     </div>
                   </div>
                 </div>
@@ -918,6 +953,10 @@
                        <div class="kv-pair female-appearance" style="border-bottom: none; padding: 2px 0;">
                            <span class="kv-label" style="align-self: flex-start; margin-top: 2px;">外貌：</span>
                            <span id="${roleId}-appearance" class="kv-value" style="text-align: left; padding-left: 8px;"></span>
+                       </div>
+                       <div class="kv-pair" style="border-bottom: none; padding: 2px 0;">
+                           <span class="kv-label" style="align-self: flex-start; margin-top: 2px;">状态：</span>
+                           <span id="${roleId}-status" class="kv-value" style="text-align: left; padding-left: 8px;"></span>
                        </div>`
                     }
                   </div>
@@ -926,6 +965,10 @@
                        `<div class="kv-pair" style="border-bottom: none; padding: 2px 0;">
                             <span class="kv-label" style="align-self: flex-start; margin-top: 2px;">着装：</span>
                             <span id="${roleId}-attire-text" class="kv-value" style="text-align: left; padding-left: 8px;"></span>
+                        </div>
+                        <div class="kv-pair" style="border-bottom: none; padding: 2px 0;">
+                            <span class="kv-label" style="align-self: flex-start; margin-top: 2px;">状态：</span>
+                            <span id="${roleId}-status" class="kv-value" style="text-align: left; padding-left: 8px;"></span>
                         </div>`
                        :
                        `<div id="${roleId}-attire" class="attire-grid"></div>`
@@ -1035,18 +1078,15 @@
       // Parser & Observer
       function getCurrentMessage() {
         // 尝试在当前窗口或父窗口寻找 ST 接口
-        const ctx = (typeof window.getCurrentMessageId === 'function') ? window :
+        const ctx = (typeof window.getCurrentMessageId === 'function') ? window : 
                    ((window.parent && typeof window.parent.getCurrentMessageId === 'function') ? window.parent : null);
         
         if (!ctx || typeof ctx.getChatMessages !== 'function') return null;
         
-        const d = ctx.getChatMessages(ctx.getCurrentMessageId());
+        const d = ctx.getChatMessages(ctx.getCurrentMessageId()); 
         return Array.isArray(d) ? d[0] : d;
       }
       function hashStr(s) { let h=0; for(let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))|0; return h.toString(); }
-      function stripDanglingMarkdownEdgeSymbols(s) {
-        return String(s || '').replace(/^[\s*_~`]+/, '').replace(/[\s*_~`]+$/, '').trim();
-      }
       function parseStatusContent(c) {
         const d={}; 
         let rolePrefix = null;
@@ -1105,7 +1145,7 @@
             if(msg) {
                 const win = msg.length>5000 ? msg.slice(-5000) : msg;
                 const m = win.match(/<(Status|StatusBlock|Status_block)>\s*([\s\S]*?)\s*<\/\1>/i);
-                if(m) content = stripDanglingMarkdownEdgeSymbols(m[2]);
+                if(m) content = m[2];
             }
         } catch(e){}
         if(!content) { try{ const t=document.querySelectorAll('Status, StatusBlock, Status_block'); if(t.length) content=t[t.length-1].innerHTML; }catch(e){} }
@@ -1152,6 +1192,7 @@
         document.addEventListener('keydown', e => {
             if(e.key==='Escape') { 
                 const d=document.getElementById('detail-overlay'); if(d?.classList.contains('open')) closeDetailOverlay();
+                const s=document.getElementById('settings-overlay'); if(s?.classList.contains('open')) toggleSettings();
             }
         });
       };
