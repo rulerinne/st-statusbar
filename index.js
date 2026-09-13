@@ -758,6 +758,8 @@ function cleanupMessageState(messageElement) {
 
     const mesText = messageElement.querySelector(".mes_text");
     if (mesText) {
+        clearCotPrefixLayout(mesText);
+        clearCotBoundaryLayout(mesText);
         clearHiddenNodes(mesText, `.${statusHiddenSourceClass}`);
         clearHiddenNodes(mesText, `.${cotHiddenSourceClass}`);
     }
@@ -937,6 +939,158 @@ async function mountCotForMessage(mes, cotFragment) {
     }
 }
 
+function clearCotPrefixLayout(mesText) {
+    mesText.querySelectorAll('.st-local-cot-prefix-space').forEach(restoreHiddenSource);
+    mesText.querySelectorAll('.st-local-cot-prefix-empty').forEach(el => el.classList.remove('st-local-cot-prefix-empty'));
+}
+
+function applyCotPrefixLayout(mes) {
+    const mesText = mes.querySelector('.mes_text');
+    if (!mesText) return;
+    const host = mesText.querySelector(`.${cotHostClass}`);
+    if (!host) { clearCotPrefixLayout(mesText); return; }
+    const empty = node => {
+        if (node.nodeType === Node.TEXT_NODE) return !node.textContent.trim();
+        if (node.nodeType === Node.COMMENT_NODE) return true;
+        // Do not hide media, controls, icons or arbitrary custom components.
+        if (!(node instanceof Element) || !node.matches('p, blockquote, div, span, br, ul, ol, li')) return false;
+        if (node.matches('[role], [tabindex], [contenteditable], [onclick]') || node.classList.contains(cotHiddenSourceClass)) return false;
+        return Array.from(node.childNodes).every(empty);
+    };
+    const selected = new Set();
+    let child = host;
+    while (child && child !== mesText) {
+        let node = child.previousSibling;
+        while (node && empty(node)) {
+            const previous = node.previousSibling;
+            if (node.nodeType === Node.TEXT_NODE) {
+                const wrapper = document.createElement('span');
+                wrapper.className = 'st-local-cot-prefix-space';
+                node.before(wrapper);
+                wrapper.appendChild(node);
+                selected.add(wrapper);
+            } else if (node instanceof Element) {
+                if (!node.classList.contains('st-local-cot-prefix-space')) node.classList.add('st-local-cot-prefix-empty');
+                selected.add(node);
+            }
+            node = previous;
+        }
+        if (node) break;
+        child = child.parentElement;
+    }
+    mesText.querySelectorAll('.st-local-cot-prefix-empty').forEach(el => {
+        if (!selected.has(el)) el.classList.remove('st-local-cot-prefix-empty');
+    });
+    mesText.querySelectorAll('.st-local-cot-prefix-space').forEach(el => {
+        if (!selected.has(el)) restoreHiddenSource(el);
+    });
+}
+
+function clearCotBoundaryLayout(mesText) {
+    mesText.querySelectorAll('.st-local-cot-leading-gap').forEach(restoreHiddenSource);
+    mesText.querySelectorAll('.st-local-cot-list-shell').forEach(el => el.classList.remove('st-local-cot-list-shell'));
+}
+
+function applyCotBoundaryLayout(mes) {
+    const mesText = mes.querySelector('.mes_text');
+    if (!mesText) return;
+    const content = mesText.querySelector('content');
+    const source = mesText.querySelector(`.${cotHiddenSourceClass}`);
+    const raw = getRawMessageByDomMessage(mes);
+    const blocks = findCotBlocks(raw);
+    const last = blocks[blocks.length - 1];
+    const suffix = last ? raw.slice(last.end).replace(/^(?:\s*<\/(?:think|thinking)\s*>)+/i, '') : '';
+    if (!content || !source || !/^\s*<content\s*>/i.test(suffix)) {
+        clearCotBoundaryLayout(mesText);
+        return;
+    }
+    // Only style the ancestor list left by Markdown, never lists inside CONTENT.
+    let child = content;
+    for (let parent = content.parentElement; parent && parent !== mesText; parent = parent.parentElement) {
+        const preceding = [];
+        for (let node = parent.firstChild; node && node !== child; node = node.nextSibling) preceding.push(node);
+        const blank = node => node.nodeType === Node.TEXT_NODE ? !node.textContent.trim()
+            : node instanceof HTMLBRElement || node.classList?.contains('st-local-cot-leading-gap');
+        if (!preceding.every(blank)) break;
+        if (parent.matches('li, ul, ol')) {
+            if (!parent.classList.contains('st-local-cot-list-shell')) parent.classList.add('st-local-cot-list-shell');
+            const fresh = preceding.filter(node => !node.classList?.contains('st-local-cot-leading-gap'));
+            if (fresh.length) {
+                const hidden = document.createElement('span');
+                hidden.className = 'st-local-cot-leading-gap';
+                hidden.hidden = true;
+                fresh[0].before(hidden);
+                fresh.forEach(node => hidden.appendChild(node));
+            }
+        }
+        child = parent;
+    }
+}
+
+function applyNarrativeIndent(mes) {
+    const mesText = mes.querySelector(".mes_text");
+    if (!mesText) return;
+    const markerClass = "st-local-narrative-indent-marker";
+    const selected = new Set();
+    const raw = getRawMessageByDomMessage(mes);
+    const endCot = Array.from(raw.matchAll(/<\/(?:think|thinking)\s*>/gi)).pop();
+    const suffix = endCot ? raw.slice(endCot.index + endCot[0].length) : "";
+    const hasStatus = /<(?:StatusBlock|Status_block|Status)\s*>/i.test(suffix);
+    // Remove the old block-level rule: Markdown may use one P for many lines.
+    for (const el of mesText.querySelectorAll(".st-local-narrative-indent")) el.classList.remove("st-local-narrative-indent");
+    if (hasStatus) {
+        const sources = mesText.querySelectorAll(`.${cotHiddenSourceClass}, think, thinking`);
+        const start = sources[sources.length - 1];
+        const end = mesText.querySelector(`.${statusHiddenSourceClass}, statusblock, status_block, status`);
+        const owned = `.${cotHostClass}, .${cotHiddenSourceClass}, .${statusHostClass}, .${statusHiddenSourceClass}, .${markerClass}, .st-local-cot-leading-gap, .st-local-cot-prefix-empty, .st-local-cot-prefix-space, pre, code, table, script, style`;
+        const explicitContent = /^\s*<content\s*>/i.test(suffix);
+        const walker = document.createTreeWalker(mesText, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+            acceptNode(node) {
+                if (node instanceof Element && node.matches(owned)) return NodeFilter.FILTER_REJECT;
+                return NodeFilter.FILTER_ACCEPT;
+            },
+        });
+        const starts = [];
+        let atStart = true;
+        let previousBlock = null;
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            if (node instanceof HTMLBRElement) { atStart = true; continue; }
+            if (node.nodeType !== Node.TEXT_NODE) continue;
+            const content = explicitContent && node.parentElement.closest("content");
+            const after = start && Boolean(start.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING);
+            const before = end && Boolean(end.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_PRECEDING);
+            if (!(after && before) && !content) continue;
+            const block = node.parentElement.closest("p, div, content, li, blockquote, h1, h2, h3, h4, h5, h6");
+            if (block !== previousBlock) atStart = true;
+            previousBlock = block;
+            const text = node.nodeValue || "";
+            for (let offset = 0; offset < text.length; offset++) {
+                if (text[offset] === "\n" || text[offset] === "\r") { atStart = true; continue; }
+                if (/\s/.test(text[offset])) continue;
+                if (atStart) starts.push({ node, offset });
+                atStart = false;
+            }
+        }
+        // Empty inline markers indent explicit paragraph starts, not wrapped
+        // display lines. No chat text or existing highlighted elements are replaced.
+        for (const { node, offset } of starts.reverse()) {
+            const text = offset ? node.splitText(offset) : node;
+            let marker = text.previousSibling;
+            if (!(marker instanceof Element) || !marker.classList.contains(markerClass)) {
+                marker = document.createElement("span");
+                marker.className = markerClass;
+                marker.setAttribute("aria-hidden", "true");
+                text.before(marker);
+            }
+            selected.add(marker);
+        }
+    }
+    for (const marker of mesText.querySelectorAll(`.${markerClass}`)) {
+        if (!selected.has(marker)) marker.remove();
+    }
+
+}
+
 async function ensureMounted() {
     const statusFragment = await loadStatusFragment();
     const cotFragment = await loadCotFragment();
@@ -952,6 +1106,10 @@ async function ensureMounted() {
         activeMesIds.add(String(mesId));
         await mountStatusbarForMessage(mes, statusFragment);
         await mountCotForMessage(mes, cotFragment);
+        applyCotPrefixLayout(mes);
+        applyCotBoundaryLayout(mes);
+        applyNarrativeIndent(mes);
+
     }
 
     Array.from(document.querySelectorAll(`.${statusHostClass}, .${cotHostClass}`)).forEach((host) => {
