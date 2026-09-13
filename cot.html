@@ -4,7 +4,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <title>Aether - 折叠栏（静态版）</title>
+    <title>Aether - 折叠栏</title>
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -192,30 +192,52 @@
 
       <div class="aether-content" id="aetherContent">
         <div class="aether-content-inner">$1</div>
-        <div class="aether-collapse" onclick="toggleCollapsible()">收起</div>
+        <div class="aether-collapse" onclick="toggleCollapsible()" role="button" tabindex="0">收起</div>
       </div>
     </div>
 
     <script>
+      const cotPanel = document.getElementById('aetherCollapsible');
+      const cotHeader = cotPanel.querySelector('.aether-header');
+      const cotContent = cotPanel.querySelector('.aether-content-inner');
+      let heightFrame = 0;
+      let lastHeight = -1;
+
+      function setCotContent(text) {
+        const value = String(text || '');
+        if (cotContent.textContent === value) return;
+        const scrollTop = cotContent.scrollTop;
+        cotContent.textContent = value;
+        cotContent.scrollTop = scrollTop;
+        updateIframeHeight();
+      }
+
       function toggleCollapsible() {
-        const collapsible = document.getElementById('aetherCollapsible');
-        const header = collapsible.querySelector('.aether-header');
-        const isExpanded = collapsible.classList.toggle('expanded');
-        header.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+        const isExpanded = cotPanel.classList.toggle('expanded');
+        cotHeader.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
         updateIframeHeight();
       }
 
       function updateIframeHeight() {
-        const bodyHeight = document.body.scrollHeight;
-        if (window.parent && window.parent !== window) {
-          window.parent.postMessage({ type: 'resizeIframe', height: bodyHeight }, '*');
+        // In the extension the parent owns sizing and coalesces measurements.
+        if (typeof window.__STLSB_SCHEDULE_RESIZE__ === 'function') {
+          window.__STLSB_SCHEDULE_RESIZE__();
+          return;
         }
+        if (heightFrame || window.parent === window) return;
+        heightFrame = requestAnimationFrame(() => {
+          heightFrame = 0;
+          const height = Math.ceil(cotPanel.getBoundingClientRect().height + 12);
+          if (height === lastHeight) return;
+          lastHeight = height;
+          window.parent.postMessage({ type: 'resizeIframe', height }, '*');
+        });
       }
 
       document.addEventListener('keydown', function (event) {
         if (event.key === 'Enter' || event.key === ' ') {
           const activeElement = document.activeElement;
-          if (activeElement && activeElement.classList.contains('aether-header')) {
+          if (activeElement && (activeElement.classList.contains('aether-header') || activeElement.classList.contains('aether-collapse'))) {
             event.preventDefault();
             toggleCollapsible();
           }
