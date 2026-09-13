@@ -13,6 +13,21 @@
         <input id="st_local_cot_enabled" type="checkbox" />
         <span>启用Cot美化</span>
       </label>
+      <label class="checkbox_label" for="st_local_narrative_indent">
+        <input id="st_local_narrative_indent" type="checkbox" />
+        <span>启用正文排版</span>
+      </label>
+      <label class="st-local-statusbar-setting-row" for="st_narrative_indent">
+        <span>首行缩进</span><select id="st_narrative_indent"><option value="0">不缩进</option><option value="1">1 字符</option><option value="2">2 字符</option></select>
+      </label>
+      <label class="st-local-statusbar-setting-row" for="st_narrative_gap">
+        <span>段间距 <output id="st_narrative_gap_value" for="st_narrative_gap">0.33 行</output></span><input id="st_narrative_gap" type="range" min="0" max="1" step="0.01" />
+      </label>
+      <label class="st-local-statusbar-setting-row" for="st_narrative_line">
+        <span>正文行距</span><select id="st_narrative_line"><option value="0">跟随主题 / 字体设置</option><option value="1.2">1.2 倍</option><option value="1.4">1.4 倍</option><option value="1.6">1.6 倍</option><option value="1.8">1.8 倍</option><option value="2">2.0 倍</option><option value="2.2">2.2 倍</option><option value="2.4">2.4 倍</option></select>
+      </label>
+      <button id="st_narrative_reset" type="button" class="menu_button">恢复默认排版</button>
+      <small class="notes">调整后即时预览并保存。默认：缩进 2 字符，段距约三分之一行，行距跟随主题。仅作用于 CoT 后、状态栏前的正文；关闭恢复原排版。</small>
       <label class="checkbox_label" for="st_local_statusbar_auto_expand">
         <input id="st_local_statusbar_auto_expand" type="checkbox" />
         <span>自动展开状态栏</span>

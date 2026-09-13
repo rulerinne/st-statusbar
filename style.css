@@ -1,3 +1,45 @@
+#st-local-detail-dialog {
+  width: min(760px, calc(100vw - 40px)); max-width: none;
+  max-height: min(85vh, 850px); box-sizing: border-box; padding: 0;
+  margin: auto; color: #e7edf7; background: #181d30; border: 1px solid #506082;
+  border-radius: 16px; box-shadow: 0 20px 70px #0009;
+  font: 16px/1.7 'Microsoft YaHei', sans-serif;
+}
+#st-local-detail-dialog[open] { display: flex; flex-direction: column; }
+#st-local-detail-dialog::backdrop { background: #0009; }
+#st-local-detail-dialog header, #st-local-detail-dialog footer {
+  display: flex; align-items: center; gap: 12px; padding: 14px 20px; flex-shrink: 0;
+}
+#st-local-detail-dialog header { border-bottom: 1px solid #ffffff20; }
+#st-local-detail-dialog footer { border-top: 1px solid #ffffff20; justify-content: flex-end; }
+#st-local-detail-dialog h2 { margin: 0; flex: 1; font-size: 19px; color: inherit; }
+#st-local-detail-dialog button {
+  color: #e7edf7; background: #303e59; border: 1px solid #657693; border-radius: 8px;
+  font: inherit; padding: 5px 14px; cursor: pointer; width: auto;
+}
+#st-local-detail-dialog button:focus-visible { outline: 2px solid #8cdeff; outline-offset: 2px; }
+#st-local-detail-dialog [data-feedback] { font-size: 13px; color: #aee6d2; margin-right: auto; }
+#st-local-detail-dialog .st-local-detail-body { overflow: auto; min-height: 0; padding: 20px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+#st-local-detail-dialog .detail-line + .detail-line { margin-top: 12px; }
+#st-local-detail-dialog .detail-hi-green { color: #a8f0c2; }
+#st-local-detail-dialog .detail-hi-red { color: #ffb6b6; }
+
+.mes_text .st-local-narrative-line-block,
+.mes_text .st-local-narrative-line-block *,
+.mes_text .st-local-narrative-line-text {
+  line-height: var(--st-narrative-line-height) !important;
+}
+content.st-local-narrative-line-block { display: block; }
+
+.mes_text .st-local-narrative-spacing {
+  display: block !important;
+  height: var(--st-narrative-gap, 0.333333lh);
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0;
+  pointer-events: none;
+}
+
 .mes_text .st-local-cot-prefix-empty,
 .mes_text .st-local-cot-prefix-space {
   display: none !important;
@@ -17,7 +59,7 @@
 
 .mes_text .st-local-narrative-indent-marker {
   display: inline-block;
-  width: 2em;
+  width: var(--st-narrative-indent, 2em);
   height: 0;
   padding: 0;
   margin: 0;

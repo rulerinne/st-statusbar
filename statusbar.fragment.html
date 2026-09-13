@@ -142,11 +142,11 @@
       .settings-item input[type="range"] { width: 100%; min-width: 0; }
       .settings-item input[type="checkbox"] { width: 14px; height: 14px; }
       .settings-item select { width: 78px; background: rgba(0,0,0,0.3); color: #fff; border: 1px solid rgba(255,255,255,0.2); padding: 4px 8px; border-radius: 4px; }
-      .detail-sheet { width: min(420px, 86%); padding: 14px; border-radius: 12px; }
+      .detail-sheet { width: min(720px, 94%); padding: 14px; border-radius: 12px; }
       .detail-sheet .sheet-header { margin-bottom: 12px; padding-bottom: 8px; font-size: 0.95em; }
       .detail-sheet .sheet-close { width: 26px; height: 26px; border-radius: 6px; }
-      .detail-lines { display: grid; gap: 6px; max-height: min(46vh, 360px); overflow-y: auto; padding-right: 2px; }
-      .detail-line { padding: 6px 8px; border-radius: 7px; background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.07); color: var(--text-primary); font-size: calc(11px * var(--font-mult, 1)); line-height: 1.32; word-break: break-word; }
+      .detail-lines { display: grid; gap: 6px; max-height: min(64vh, 600px); overflow-y: auto; padding-right: 2px; }
+      .detail-line { padding: 6px 8px; border-radius: 7px; background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.07); color: var(--text-primary); font-size: 16px; line-height: 1.7; word-break: break-word; }
       .detail-line.detail-line--plain { white-space: pre-wrap; text-align: left; }
       .detail-hi-green { color: #a8f0c2; }
       .detail-hi-red { color: #ffb6b6; }
@@ -573,7 +573,7 @@
         <div class="settings-backdrop" onclick="closeDetailOverlay()"></div>
         <div class="settings-sheet detail-sheet">
           <div class="sheet-header"><span id="detail-title">详细信息</span><button class="sheet-close" onclick="closeDetailOverlay()"><span data-icon="times"></span></button></div>
-          <div id="detail-lines" class="detail-lines"></div>
+          <div id="detail-lines" class="detail-lines"></div><button type="button" id="detail-copy" class="sheet-close" style="width:auto;padding:6px 12px;margin-top:12px" onclick="copyDetailText()">复制全文</button><span id="detail-copy-result" role="status"></span>
         </div>
       </div>
     </div>
@@ -727,7 +727,7 @@
         flush();
         return out.join('');
       }
-      function closeDetailOverlay() { document.getElementById('detail-overlay')?.classList.remove('open'); }
+      function closeDetailOverlay() { document.getElementById('detail-overlay')?.classList.remove('open'); if(detailReturnFocus?.isConnected) detailReturnFocus.focus(); }
       function applyTextStyleToDetailLine(lineEl, sourceEl) {
         if(!lineEl || !sourceEl) return;
         const cs = getComputedStyle(sourceEl);
@@ -735,11 +735,29 @@
           lineEl.style[prop] = cs[prop];
         });
       }
+      let detailRawText = '';
+      let detailReturnFocus = null;
+      async function copyDetailText() {
+        const value = detailRawText;
+        let copied = false;
+        try { await navigator.clipboard.writeText(value); copied = true; } catch {}
+        if(!copied) {
+          const input = document.createElement('textarea'); input.value = value;
+          input.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0';
+          document.body.append(input); input.select();
+          try { copied = document.execCommand('copy'); } catch {}
+          input.remove(); document.getElementById('detail-copy').focus();
+        }
+        if(value === detailRawText) document.getElementById('detail-copy-result').textContent = copied ? '已复制' : '复制失败，请手动选择文字复制';
+      }
       function openDetailOverlay(title, raw, options = {}) {
         const overlay = document.getElementById('detail-overlay');
         const titleEl = document.getElementById('detail-title');
         const linesEl = document.getElementById('detail-lines');
         if(!overlay || !titleEl || !linesEl) return;
+        detailRawText = String(raw || '');
+        detailReturnFocus = options.sourceEl || document.activeElement;
+        document.getElementById('detail-copy-result').textContent = '';
         titleEl.textContent = title || '详细信息';
         linesEl.removeAttribute('style');
         if(options.plain) {
@@ -747,48 +765,61 @@
           linesEl.innerHTML = text
             ? `<div class="detail-line detail-line--plain">${escapeHtml(text)}</div>`
             : '<div class="detail-empty">暂无详细信息</div>';
-          applyTextStyleToDetailLine(linesEl.querySelector('.detail-line'), options.sourceEl);
+          // Reader font remains large and legible, independently of compact fields.
         } else {
           const lines = String(raw || '').split(/[;；]/).map(x => x.trim()).filter(Boolean);
           linesEl.innerHTML = lines.length
             ? lines.map(x => `<div class="detail-line">${renderPlainTextWithDetailHighlights(x)}</div>`).join('')
             : '<div class="detail-empty">暂无详细信息</div>';
         }
+        if(typeof window.__STLSB_OPEN_DETAIL__ === 'function') {
+          const target = detailReturnFocus;
+          window.__STLSB_OPEN_DETAIL__(title, detailRawText, Array.from(linesEl.childNodes), () => { if(target?.isConnected) target.focus(); });
+          return;
+        }
         overlay.classList.add('open');
+        document.getElementById('detail-copy').focus();
       }
-      const CLAMP_DETAIL_SELECTOR = '.crh-stat-item .crh-stat-lbl, .crh-stats-grid-item .value';
+      const CLAMP_DETAIL_SELECTOR = '.kv-value, .crh-stat-item .crh-stat-lbl, .crh-stats-grid-item .value, .attire-cell-value, .crh-thought, .scene-value';
+      const detailBindings = new WeakMap();
+      let clampFrame = null;
       function getClampTitle(el) {
-        const label = el.closest('.crh-stat-item')?.querySelector('.crh-stat-val')?.textContent
+        const label = el.closest('.kv-pair')?.querySelector('.kv-label')?.textContent
+          || el.closest('.attire-cell')?.querySelector('.attire-cell-label')?.textContent
+          || el.closest('.crh-stat-item')?.querySelector('.crh-stat-val')?.textContent
           || el.closest('.crh-stats-grid-item')?.querySelector('.label')?.textContent
           || '完整内容';
-        return label.trim() || '完整内容';
+        return label.trim().replace(/[:：]$/, '') || '完整内容';
       }
       function updateClampDetailTriggers() {
-        document.querySelectorAll(CLAMP_DETAIL_SELECTOR).forEach(el => {
-          el.classList.remove('clamp-detail-trigger');
-          el.removeAttribute('role');
-          el.removeAttribute('tabindex');
-          el.removeAttribute('title');
-          el.onclick = null;
-          el.onkeydown = null;
+        // Read all field sizes first, then update only changed affordances.
+        const decisions = Array.from(document.querySelectorAll(CLAMP_DETAIL_SELECTOR)).map(el => {
+          if(el.hasAttribute('data-detail-raw') || el.querySelector('.detail-trigger')) return null;
           const text = (el.textContent || '').trim();
-          if(!text || el.scrollHeight <= el.clientHeight + 1) return;
-          el.classList.add('clamp-detail-trigger');
-          el.setAttribute('role', 'button');
-          el.setAttribute('tabindex', '0');
-          el.setAttribute('title', '点击查看完整内容');
-          const open = () => openDetailOverlay(getClampTitle(el), text, { plain: true, sourceEl: el });
-          el.onclick = open;
-          el.onkeydown = (event) => {
-            if(event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault();
-              open();
-            }
-          };
-        });
+          const visible = el.getClientRects().length > 0;
+          const active = visible && text && (text.length >= 40 || el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1);
+          return {el, active: Boolean(active)};
+        }).filter(Boolean);
+        for(const {el, active} of decisions) {
+          let binding = detailBindings.get(el);
+          if(active && !binding) {
+            binding = {role: el.getAttribute('role'), tabindex: el.getAttribute('tabindex'), title: el.getAttribute('title')};
+            binding.open = () => openDetailOverlay(getClampTitle(el), el.textContent || '', {plain: true, sourceEl: el});
+            binding.key = event => { if(event.key === 'Enter' || event.key === ' ') {event.preventDefault(); binding.open();} };
+            detailBindings.set(el, binding);
+            el.addEventListener('click', binding.open); el.addEventListener('keydown', binding.key);
+            el.classList.add('clamp-detail-trigger'); el.setAttribute('role', 'button'); el.setAttribute('tabindex', '0'); el.setAttribute('title', '点击阅读全文并复制');
+          } else if(!active && binding) {
+            el.removeEventListener('click', binding.open); el.removeEventListener('keydown', binding.key);
+            el.classList.remove('clamp-detail-trigger');
+            for(const attr of ['role','tabindex','title']) {if(binding[attr] === null) el.removeAttribute(attr); else el.setAttribute(attr, binding[attr]);}
+            detailBindings.delete(el);
+          }
+        }
       }
       function queueClampDetailUpdate() {
-        requestAnimationFrame(() => requestAnimationFrame(updateClampDetailTriggers));
+        if(clampFrame !== null) return;
+        clampFrame = requestAnimationFrame(() => {clampFrame = null; updateClampDetailTriggers();});
       }
       function toggleInfoBlock(btn) {
         const body = btn.closest('.info-block')?.querySelector('.block-body');
@@ -1143,7 +1174,7 @@
         try {
             const mObj = getCurrentMessage(), msg = (mObj && typeof mObj.message==='string') ? mObj.message : '';
             if(msg) {
-                const win = msg.length>5000 ? msg.slice(-5000) : msg;
+                const win = msg; // Long status blocks must not lose their opening tag.
                 const m = win.match(/<(Status|StatusBlock|Status_block)>\s*([\s\S]*?)\s*<\/\1>/i);
                 if(m) content = m[2];
             }
@@ -1172,6 +1203,7 @@
         applyStartupCollapseState();
         applyPanelWidth(); applyTextScale(); applyTextWeight(); applyTextAlign();
         installWheelPassthrough();
+        window.addEventListener('resize', queueClampDetailUpdate, {passive:true});
         execParseStatusBlock(); initObserver();
         document.addEventListener('keydown', e => {
             if(e.key==='Escape') { 

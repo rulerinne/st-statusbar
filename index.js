@@ -19,6 +19,10 @@ const textWeightInputId = "st_local_statusbar_text_weight";
 const textAlignInputId = "st_local_statusbar_text_align";
 
 const defaultSettings = {
+    narrativeIndent: true,
+    narrativeIndentChars: 2,
+    narrativeParagraphGap: 0.333333,
+    narrativeLineHeight: 0,
     enabled: true,
     cotEnabled: true,
     autoExpand: true,
@@ -62,6 +66,11 @@ function ensureSettings() {
             settings[key] = value;
         }
     }
+    for (const [key, min, max] of [['narrativeIndentChars', 0, 2], ['narrativeParagraphGap', 0, 1], ['narrativeLineHeight', 0, 2.4]]) {
+        const value = Number(settings[key]);
+        settings[key] = Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : defaultSettings[key];
+    }
+    if (settings.narrativeLineHeight > 0) settings.narrativeLineHeight = Math.max(1.2, settings.narrativeLineHeight);
     return settings;
 }
 
@@ -683,6 +692,11 @@ function bindFrame(frame, onLoad) {
     frame.addEventListener("load", () => {
         if (!frame.isConnected) return;
         if (frame.contentWindow) frame.contentWindow.__STLSB_SCHEDULE_RESIZE__ = scheduleResize;
+        if (frame.classList.contains(statusFrameClass) && frame.contentWindow) {
+            frame.contentWindow.__STLSB_OPEN_DETAIL__ = (title, text, nodes, returnFocus) => {
+                if (frame.isConnected) openStatusDetail(title, text, nodes, returnFocus);
+            };
+        }
         onLoad?.(frame);
         scheduleResize();
 
@@ -733,6 +747,59 @@ function syncStatusFrameMessage(frame, rawMessage, force = false) {
     }
 }
 
+let statusDetailDialog = null;
+function openStatusDetail(title, text, nodes, returnFocus) {
+    if (!statusDetailDialog) {
+        const dialog = document.createElement('dialog');
+        dialog.id = 'st-local-detail-dialog';
+        dialog.setAttribute('aria-labelledby', 'st-local-detail-title');
+        dialog.innerHTML = `<header><h2 id="st-local-detail-title"></h2><button type="button" data-close aria-label="关闭详情">×</button></header><div class="st-local-detail-body" tabindex="0"></div><footer><span role="status" data-feedback></span><button type="button" data-copy>复制全文</button><button type="button" data-close>关闭</button></footer>`;
+        dialog.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => dialog.close()));
+        dialog.addEventListener('click', event => {
+            const rect = dialog.getBoundingClientRect();
+            if (event.target === dialog && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) dialog.close();
+        });
+        dialog.addEventListener('close', () => {
+            dialog.__returnFocus?.(); dialog.__returnFocus = null;
+            dialog.__text = ''; dialog.querySelector('.st-local-detail-body').replaceChildren();
+        });
+        dialog.querySelector('[data-copy]').addEventListener('click', async () => {
+            const value = dialog.__text || '';
+            const feedback = dialog.querySelector('[data-feedback]');
+            let copied = false;
+            try { await navigator.clipboard.writeText(value); copied = true; } catch {}
+            if (!copied) {
+                const input = document.createElement('textarea'); input.value = value;
+                input.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0'; dialog.appendChild(input); input.select();
+                try { copied = document.execCommand('copy'); } catch {}
+                input.remove(); dialog.querySelector('[data-copy]').focus();
+            }
+            if (dialog.open && dialog.__text === value) feedback.textContent = copied ? '已复制' : '复制失败，请选中文字后手动复制';
+        });
+        document.body.appendChild(dialog); statusDetailDialog = dialog;
+    }
+    const dialog = statusDetailDialog;
+    dialog.querySelector('h2').textContent = title || '完整内容';
+    dialog.__text = String(text || ''); dialog.__returnFocus = returnFocus;
+    dialog.querySelector('[data-feedback]').textContent = '';
+    const body = dialog.querySelector('.st-local-detail-body'); body.replaceChildren();
+    // Copy only text and presentation spans, preserving existing highlight colours
+    // without importing iframe controls, attributes, or executable HTML.
+    const copy = (node, target) => {
+        if (node.nodeType === Node.TEXT_NODE) { target.appendChild(document.createTextNode(node.textContent)); return; }
+        if (node.nodeType !== Node.ELEMENT_NODE) return;
+        if (['SCRIPT', 'STYLE'].includes(node.tagName)) return;
+        if (!['DIV', 'SPAN', 'BR'].includes(node.tagName)) { target.appendChild(document.createTextNode(node.textContent)); return; }
+        const el = document.createElement(node.tagName.toLowerCase());
+        for (const name of ['detail-line', 'detail-hi-green', 'detail-hi-red', 'detail-empty']) if (node.classList.contains(name)) el.classList.add(name);
+        target.appendChild(el); Array.from(node.childNodes).forEach(child => copy(child, el));
+    };
+    if (nodes?.length) Array.from(nodes).forEach(node => copy(node, body));
+    else body.textContent = dialog.__text || '暂无详细信息';
+    if (!dialog.open) dialog.showModal();
+    body.scrollTop = 0; dialog.querySelector('[data-copy]').focus();
+}
+
 function getAllStatusFrames() {
     return Array.from(document.querySelectorAll(`.${statusFrameClass}`));
 }
@@ -758,6 +825,7 @@ function cleanupMessageState(messageElement) {
 
     const mesText = messageElement.querySelector(".mes_text");
     if (mesText) {
+        clearNarrativeLineHeight(mesText);
         clearCotPrefixLayout(mesText);
         clearCotBoundaryLayout(mesText);
         clearHiddenNodes(mesText, `.${statusHiddenSourceClass}`);
@@ -1027,23 +1095,54 @@ function applyCotBoundaryLayout(mes) {
     }
 }
 
+function clearNarrativeLineHeight(mesText) {
+    mesText.querySelectorAll('.st-local-narrative-line-text').forEach(restoreHiddenSource);
+    mesText.querySelectorAll('.st-local-narrative-line-block').forEach(el => el.classList.remove('st-local-narrative-line-block'));
+}
+
 function applyNarrativeIndent(mes) {
     const mesText = mes.querySelector(".mes_text");
     if (!mesText) return;
     const markerClass = "st-local-narrative-indent-marker";
+    const spacingClass = "st-local-narrative-spacing";
     const selected = new Set();
+    const selectedSpacing = new Set();
+    const settings = ensureSettings();
+    const setVar = (name, value) => { if (mesText.style.getPropertyValue(name) !== value) mesText.style.setProperty(name, value); };
+    setVar('--st-narrative-indent', `${settings.narrativeIndentChars}em`);
+    setVar('--st-narrative-gap', `${settings.narrativeParagraphGap}lh`);
+    setVar('--st-narrative-line-height', String(settings.narrativeLineHeight || 'inherit'));
+    if (!settings.narrativeIndent || !settings.narrativeLineHeight) clearNarrativeLineHeight(mesText);
     const raw = getRawMessageByDomMessage(mes);
     const endCot = Array.from(raw.matchAll(/<\/(?:think|thinking)\s*>/gi)).pop();
+    if (!endCot) clearNarrativeLineHeight(mesText);
     const suffix = endCot ? raw.slice(endCot.index + endCot[0].length) : "";
     const hasStatus = /<(?:StatusBlock|Status_block|Status)\s*>/i.test(suffix);
     // Remove the old block-level rule: Markdown may use one P for many lines.
     for (const el of mesText.querySelectorAll(".st-local-narrative-indent")) el.classList.remove("st-local-narrative-indent");
-    if (hasStatus) {
+    if (endCot && ensureSettings().narrativeIndent) {
         const sources = mesText.querySelectorAll(`.${cotHiddenSourceClass}, think, thinking`);
         const start = sources[sources.length - 1];
-        const end = mesText.querySelector(`.${statusHiddenSourceClass}, statusblock, status_block, status`);
-        const owned = `.${cotHostClass}, .${cotHiddenSourceClass}, .${statusHostClass}, .${statusHiddenSourceClass}, .${markerClass}, .st-local-cot-leading-gap, .st-local-cot-prefix-empty, .st-local-cot-prefix-space, pre, code, table, script, style`;
+        const end = mesText.querySelector(`.${statusHostClass}, .${statusHiddenSourceClass}, statusblock, status_block, status`);
+        const owned = `.${cotHostClass}, .${cotHiddenSourceClass}, .${statusHostClass}, .${statusHiddenSourceClass}, .${markerClass}, .${spacingClass}, .st-local-cot-leading-gap, .st-local-cot-prefix-empty, .st-local-cot-prefix-space, statusblock, status_block, status, pre, code, table, script, style`;
         const explicitContent = /^\s*<content\s*>/i.test(suffix);
+        // When CoT beautification is disabled, the tags may still be literal
+        // text rather than hidden source elements. Use their text offsets.
+        const literalOffsets = new Map();
+        let literalStart = -1;
+        let literalEnd = Infinity;
+        if (!start) {
+            const nodes = getTextNodesForMatch(mesText, [markerClass, spacingClass, statusHostClass, statusHiddenSourceClass]);
+            let length = 0;
+            for (const node of nodes) { literalOffsets.set(node, length); length += node.length; }
+            const visible = nodes.map(node => node.nodeValue || '').join('');
+            const close = Array.from(visible.matchAll(/<\/(?:think|thinking)\s*>/gi)).pop();
+            if (close) {
+                literalStart = close.index + close[0].length;
+                const statusTag = /<(?:StatusBlock|Status_block|Status)\s*>/i.exec(visible.slice(literalStart));
+                if (statusTag) literalEnd = literalStart + statusTag.index;
+            }
+        }
         const walker = document.createTreeWalker(mesText, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
             acceptNode(node) {
                 if (node instanceof Element && node.matches(owned)) return NodeFilter.FILTER_REJECT;
@@ -1051,6 +1150,7 @@ function applyNarrativeIndent(mes) {
             },
         });
         const starts = [];
+        const proseNodes = [];
         let atStart = true;
         let previousBlock = null;
         for (let node = walker.nextNode(); node; node = walker.nextNode()) {
@@ -1058,35 +1158,93 @@ function applyNarrativeIndent(mes) {
             if (node.nodeType !== Node.TEXT_NODE) continue;
             const content = explicitContent && node.parentElement.closest("content");
             const after = start && Boolean(start.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING);
-            const before = end && Boolean(end.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_PRECEDING);
-            if (!(after && before) && !content) continue;
+            const before = end ? Boolean(end.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_PRECEDING) : !hasStatus || Boolean(content);
+            const literal = literalStart >= 0 && literalOffsets.has(node);
+            if (end && !before) continue;
+            if ((!before || (!after && !content)) && !literal) continue;
             const block = node.parentElement.closest("p, div, content, li, blockquote, h1, h2, h3, h4, h5, h6");
+            if (textIsEntirelyNarrative(node)) proseNodes.push({ node, block });
             if (block !== previousBlock) atStart = true;
             previousBlock = block;
             const text = node.nodeValue || "";
             for (let offset = 0; offset < text.length; offset++) {
+                if (literal && (literalOffsets.get(node) + offset < literalStart || literalOffsets.get(node) + offset >= literalEnd)) continue;
                 if (text[offset] === "\n" || text[offset] === "\r") { atStart = true; continue; }
                 if (/\s/.test(text[offset])) continue;
                 if (atStart) starts.push({ node, offset });
                 atStart = false;
             }
         }
+        function textIsEntirelyNarrative(node) {
+            if (literalStart < 0 || !literalOffsets.has(node)) return true;
+            const offset = literalOffsets.get(node);
+            return offset >= literalStart && offset + node.length <= literalEnd;
+        }
         // Empty inline markers indent explicit paragraph starts, not wrapped
         // display lines. No chat text or existing highlighted elements are replaced.
-        for (const { node, offset } of starts.reverse()) {
+        for (let i = starts.length - 1; i >= 0; i--) {
+            const { node, offset } = starts[i];
             const text = offset ? node.splitText(offset) : node;
-            let marker = text.previousSibling;
+            let anchor = text;
+            // Put paragraph spacing before a leading quote/colour wrapper, not
+            // inside it (where generated quotation marks could get their own line).
+            while (anchor.parentElement?.matches('q, em, strong, b, i, u, span')) {
+                const parent = anchor.parentElement;
+                if (parent === mesText || parent.matches(`.${cotHostClass}, .${statusHostClass}`)) break;
+                const preceding = [];
+                for (let sibling = parent.firstChild; sibling && sibling !== anchor; sibling = sibling.nextSibling) preceding.push(sibling);
+                if (!preceding.every(sibling => sibling.nodeType === Node.TEXT_NODE ? !sibling.textContent.trim() : sibling.classList?.contains(markerClass) || sibling.classList?.contains(spacingClass))) break;
+                anchor = parent;
+            }
+            let marker = anchor.previousSibling;
             if (!(marker instanceof Element) || !marker.classList.contains(markerClass)) {
                 marker = document.createElement("span");
                 marker.className = markerClass;
                 marker.setAttribute("aria-hidden", "true");
-                text.before(marker);
+                anchor.before(marker);
             }
             selected.add(marker);
+            if (i > 0) {
+                let spacing = marker.previousSibling;
+                if (!(spacing instanceof Element) || !spacing.classList.contains(spacingClass)) {
+                    spacing = document.createElement('span');
+                    spacing.className = spacingClass;
+                    spacing.setAttribute('aria-hidden', 'true');
+                    marker.before(spacing);
+                }
+                selectedSpacing.add(spacing);
+            }
+        }
+        if (settings.narrativeLineHeight) {
+            const blocks = new Set();
+            for (const {node, block} of proseNodes) {
+                if (block && block !== mesText && !block.querySelector(`.${cotHostClass}, .${cotHiddenSourceClass}, .${statusHostClass}, .${statusHiddenSourceClass}, statusblock, status, pre, table`)) {
+                    blocks.add(block);
+                }
+                // Include split text siblings created by indentation without
+                // replacing inline colour/formatting elements or iframe nodes.
+                const parent = node.parentElement;
+                if (parent && !parent.classList.contains('st-local-narrative-line-text')) {
+                    for (const text of Array.from(parent.childNodes)) {
+                        if (text.nodeType !== Node.TEXT_NODE || !text.textContent.trim()) continue;
+                        if (!textIsEntirelyNarrative(text)) continue;
+                        const span = document.createElement('span');
+                        span.className = 'st-local-narrative-line-text';
+                        text.before(span); span.appendChild(text);
+                    }
+                }
+            }
+            mesText.querySelectorAll('.st-local-narrative-line-block').forEach(el => {
+                if (!blocks.has(el)) el.classList.remove('st-local-narrative-line-block');
+            });
+            blocks.forEach(el => { if (!el.classList.contains('st-local-narrative-line-block')) el.classList.add('st-local-narrative-line-block'); });
         }
     }
     for (const marker of mesText.querySelectorAll(`.${markerClass}`)) {
         if (!selected.has(marker)) marker.remove();
+    }
+    for (const spacing of mesText.querySelectorAll(`.${spacingClass}`)) {
+        if (!selectedSpacing.has(spacing)) spacing.remove();
     }
 
 }
@@ -1174,6 +1332,46 @@ function installEventHooks() {
         "generation_ended",
     ].forEach((eventName) => eventSource.on(eventName, remount));
     eventHooksInstalled = true;
+}
+
+function syncNarrativeControls() {
+    const settings = ensureSettings();
+    const values = {indent: settings.narrativeIndentChars, gap: settings.narrativeParagraphGap, line: settings.narrativeLineHeight};
+    for (const [name, value] of Object.entries(values)) {
+        const input = document.getElementById(`st_narrative_${name}`);
+        if (input) { input.value = String(value); input.disabled = !settings.narrativeIndent; }
+    }
+    const gap = document.getElementById('st_narrative_gap_value');
+    if (gap) gap.textContent = `${Number(settings.narrativeParagraphGap.toFixed(2))} 行`;
+}
+
+let narrativePreviewFrame = null;
+function onNarrativeLayoutInput() {
+    const settings = ensureSettings();
+    settings.narrativeIndentChars = Number(document.getElementById('st_narrative_indent').value);
+    settings.narrativeParagraphGap = Number(document.getElementById('st_narrative_gap').value);
+    settings.narrativeLineHeight = Number(document.getElementById('st_narrative_line').value);
+    syncNarrativeControls();
+    saveSettingsDebounced();
+    if (narrativePreviewFrame !== null) return;
+    narrativePreviewFrame = requestAnimationFrame(() => {
+        narrativePreviewFrame = null;
+        getCharacterMessageElements().forEach(applyNarrativeIndent);
+    });
+}
+
+function onNarrativeReset() {
+    const settings = ensureSettings();
+    for (const key of ['narrativeIndentChars', 'narrativeParagraphGap', 'narrativeLineHeight']) settings[key] = defaultSettings[key];
+    syncNarrativeControls(); saveSettingsDebounced();
+    getCharacterMessageElements().forEach(applyNarrativeIndent);
+}
+
+function onNarrativeIndentInput(event) {
+    ensureSettings().narrativeIndent = Boolean(event.target.checked);
+    saveSettingsDebounced();
+    syncNarrativeControls();
+    getCharacterMessageElements().forEach(applyNarrativeIndent);
 }
 
 function onEnabledInput(event) {
@@ -1325,6 +1523,9 @@ async function initSettingsUi() {
     $(container).append(settingsHtml);
     $(`#${enabledInputId}`).on("change", onEnabledInput);
     $(`#${cotEnabledInputId}`).on("change", onCotEnabledInput);
+    $('#st_local_narrative_indent').on('change', onNarrativeIndentInput);
+    $('#st_narrative_indent, #st_narrative_gap, #st_narrative_line').on('input change', onNarrativeLayoutInput);
+    $('#st_narrative_reset').on('click', onNarrativeReset);
     $(`#${autoExpandInputId}`).on("change", onStatusbarSettingInput);
     $(`#${widthInputId}, #${textScaleInputId}, #${textWeightInputId}`).on("input change", onStatusbarSettingInput);
     $(`#${textAlignInputId}`).on("change", onStatusbarSettingInput);
@@ -1335,6 +1536,8 @@ function syncSettingsUi() {
     const settings = ensureSettings();
     $(`#${enabledInputId}`).prop("checked", settings.enabled);
     $(`#${cotEnabledInputId}`).prop("checked", settings.cotEnabled);
+    $('#st_local_narrative_indent').prop('checked', Boolean(settings.narrativeIndent));
+    syncNarrativeControls();
     $(`#${autoExpandInputId}`).prop("checked", Boolean(settings.autoExpand));
     $(`#${widthInputId}`).val(settings.panelWidth);
     $(`#${textScaleInputId}`).val(settings.textScale);
