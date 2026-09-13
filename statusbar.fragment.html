@@ -1160,26 +1160,10 @@
 
       function initObserver() {
         if(_isObserving) return;
-        const evtSrc = window.eventSource || (window.parent ? window.parent.eventSource : null);
-        if(evtSrc && typeof evtSrc.on==='function') {
-            console.log('Status Bar: Connected to Event Source');
-            const trig = () => setTimeout(execParseStatusBlock, 50);
-            ['generation_ended','message_updated','chat_id_changed','message_sent'].forEach(e => evtSrc.on(e, trig));
-            _isObserving = true; return;
-        }
-        
-        // Fallback: DOM Observer (check parent if in iframe)
-        let chatRoot = document.getElementById('chat') || document.querySelector('.mes_text');
-        if (!chatRoot && window.parent) {
-            try { chatRoot = window.parent.document.getElementById('chat') || window.parent.document.querySelector('.mes_text'); } catch(e){}
-        }
-        chatRoot = chatRoot || document.body;
-
-        const obs = new MutationObserver(m => {
-            if(_statusParseTimer) clearTimeout(_statusParseTimer);
-            _statusParseTimer = setTimeout(execParseStatusBlock, 500);
-        });
-        obs.observe(chatRoot, { childList: true, subtree: true, characterData: chatRoot!==document.body });
+        // Global events are handled by the parent extension. Registering a
+        // listener in every historical iframe causes duplicate refreshes.
+        // The parent remounts/synchronizes the iframe when message content
+        // changes, so an observer per iframe is unnecessary as well.
         _isObserving = true;
       }
 
