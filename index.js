@@ -39,6 +39,7 @@ window.getChatMessages = () => [{ message: window.__STLSB_BRIDGE__.message || ""
 let statusFragmentCache = null;
 let cotFragmentCache = null;
 let mountTimer = null;
+let remountTimer = null;
 let domObserver = null;
 let domObserverRoot = null;
 let initialRetryTimers = [];
@@ -155,21 +156,42 @@ function extractStatusBlock(rawMessage) {
     return match ? normalizeExtractedStatusContent(match[2]) : "";
 }
 
+// Scan tag boundaries once; never include prose preceding a complete block.
+// Older replies may omit the opening tag, so keep that leading-block format.
+function findCotBlocks(source) {
+    const blocks = [];
+    const tags = /<\/?(think|thinking)\s*>/gi;
+    let opening = null;
+    let sawOpening = false;
+    for (const tag of String(source || "").matchAll(tags)) {
+        if (tag[0][1] !== "/") {
+            opening = { start: tag.index, contentStart: tag.index + tag[0].length, name: tag[1].toLowerCase() };
+            sawOpening = true;
+        } else if (opening && opening.name === tag[1].toLowerCase()) {
+            blocks.push({ start: opening.start, end: tag.index + tag[0].length, contentStart: opening.contentStart, contentEnd: tag.index });
+            opening = null;
+        } else if (!sawOpening && blocks.length === 0) {
+            blocks.push({ start: 0, end: tag.index + tag[0].length, contentStart: 0, contentEnd: tag.index, legacy: true });
+        }
+    }
+    return blocks;
+}
+
 function extractCotBlock(rawMessage) {
     const source = String(rawMessage || "");
-    const regex = /([\s\S]*)(<\/think>|<\/thinking>)/gi;
-    let match = null;
-    let lastContent = "";
+    return findCotBlocks(source)
+        .map((block) => cotSourceToText(source.slice(block.contentStart, block.contentEnd)))
+        .filter(Boolean).join("\n\n");
+}
 
-    while ((match = regex.exec(source)) !== null) {
-        lastContent = match[1] || "";
-    }
-
-    if (!lastContent) {
-        return "";
-    }
-
-    return stripHtmlToText(lastContent).trim();
+function cotSourceToText(source) {
+    // Preserve literal tag references such as <info> inside reasoning text.
+    const div = document.createElement("div");
+    div.innerHTML = String(source || "")
+        .replace(/<\s*br\s*\/?>/gi, "\n")
+        .replace(/<\/?(?:b|strong|em|i|u|s|del|span|p|div)\b[^>]*>/gi, "")
+        .replace(/</g, "&lt;");
+    return (div.textContent || "").trim();
 }
 
 function buildStatusSrcdoc(fragment, initialMessage = "") {
@@ -181,7 +203,7 @@ function buildStatusSrcdoc(fragment, initialMessage = "") {
 }
 
 function buildCotSrcdoc(fragment, content = "") {
-    return String(fragment || "").replace(/\$1/g, escapeHtml(content));
+    return String(fragment || "").replace(/\$1/g, () => escapeHtml(content));
 }
 
 async function loadStatusFragment() {
@@ -210,14 +232,14 @@ function getChatRoot() {
 
 function getRawMessageByDomMessage(domMessage) {
     const mesId = domMessage?.getAttribute("mesid");
-    const swipeId = Number(domMessage?.getAttribute("swipeid") || "0");
     const context = getContextSafe();
     const chat = Array.isArray(context?.chat) ? context.chat : null;
 
     if (chat && mesId !== null && typeof mesId !== "undefined") {
         const item = chat[Number(mesId)];
+        const swipeId = Number(domMessage?.getAttribute("swipeid") ?? item?.swipe_id ?? 0);
         const swipeText = Array.isArray(item?.swipes) ? item.swipes[Number.isFinite(swipeId) ? swipeId : 0] : "";
-        const raw = swipeText || item?.mes || item?.message || item?.text || "";
+        const raw = item?.mes ?? item?.message ?? item?.text ?? swipeText ?? "";
         if (typeof raw === "string") {
             return raw;
         }
@@ -255,20 +277,18 @@ function getStatusTextForMessage(rawMessage, mesText) {
     return "";
 }
 
+const cotTextCache = new WeakMap();
 function getCotTextForMessage(rawMessage, mesText = null) {
-    const extracted = extractCotBlock(rawMessage);
-    if (extracted) {
-        return extracted;
+    if (rawMessage) {
+        const cached = mesText && cotTextCache.get(mesText);
+        if (cached?.raw === rawMessage) return cached.text;
+        const text = extractCotBlock(rawMessage);
+        if (mesText) cotTextCache.set(mesText, { raw: rawMessage, text });
+        return text;
     }
-
-    const domText = mesText?.textContent || "";
-    return extractCotBlock(domText);
-}
-
-function getCotAnchorText(mesText) {
-    const text = mesText?.textContent || "";
-    const match = text.match(/<\/thinking>|<\/think>/i);
-    return match ? match[0] : "";
+    const elements = Array.from(mesText?.querySelectorAll("think, thinking") || []);
+    if (elements.length) return elements.map((el) => stripHtmlToText(el.innerHTML).trim()).join("\n\n");
+    return extractCotBlock(mesText?.textContent || "");
 }
 
 function getTextNodesForMatch(container, ignoredClasses = []) {
@@ -373,42 +393,89 @@ function normalizeCotFollowingList(hidden) {
     unwrapElementPreservingChildren(list);
 }
 
-function ensureHiddenCotBlock(mesText, hiddenClass, ignoredClasses) {
+function ensureHiddenCotBlock(mesText, hiddenClass, ignoredClasses, rawMessage = "", cotText = "") {
     const existingHiddenNodes = Array.from(mesText.querySelectorAll(`.${hiddenClass}`));
     if (existingHiddenNodes.length) {
         return existingHiddenNodes[0];
     }
 
-    const textNodes = getTextNodesForMatch(mesText, ignoredClasses);
-    const chars = [];
-    for (const node of textNodes) {
-        const value = node.nodeValue || "";
-        for (let offset = 0; offset < value.length; offset += 1) {
-            chars.push({ char: value[offset], node, offset });
+    // Some renderers leave real HTML elements; others escape the tags as text.
+    for (const element of mesText.querySelectorAll("think, thinking")) {
+        if (ignoredClasses.some((name) => element.closest(`.${name}`))) continue;
+        const hidden = document.createElement("span");
+        hidden.className = hiddenClass;
+        hidden.hidden = true;
+        element.before(hidden);
+        hidden.appendChild(element);
+    }
+
+    const nodes = getTextNodesForMatch(mesText, ignoredClasses);
+    const rawText = nodes.map((node) => node.nodeValue || "").join("");
+    // Store offsets per text node instead of allocating an object per character.
+    const positions = [];
+    let offset = 0;
+    for (const node of nodes) {
+        positions.push({ node, start: offset, end: offset + node.length });
+        offset += node.length;
+    }
+    const ranges = findCotBlocks(rawText).map((block) => {
+        const start = positions.find((pos) => pos.end > block.start);
+        const end = positions.find((pos) => pos.end >= block.end);
+        if (!start || !end) return null;
+        const range = document.createRange();
+        range.setStart(start.node, block.start - start.start);
+        range.setEnd(end.node, block.end - end.start);
+        return { range, legacy: block.legacy };
+    }).filter(Boolean);
+    for (const { range, legacy } of ranges.reverse()) {
+        const hidden = document.createElement("span");
+        hidden.className = hiddenClass;
+        hidden.hidden = true;
+        if (legacy) hidden.dataset.legacyCot = "1";
+        hidden.appendChild(range.extractContents());
+        range.insertNode(hidden);
+    }
+    const taggedHidden = mesText.querySelector(`.${hiddenClass}`);
+    if (taggedHidden) return taggedHidden;
+
+    // Regex/Markdown preprocessing may remove the tags before they reach DOM.
+    // First try an exact normalized content match, allowing Markdown list syntax
+    // and the configured removal of angle brackets around literal tag references.
+    const variants = [cotText, stripHtmlToText(cotText), cotText.replace(/[<>]/g, "")];
+    const candidates = new Set();
+    for (const variant of variants) {
+        const plain = variant.replace(/^[ \t]*(?:[-*+]\s+|\d+[.)]\s+|#{1,6}\s+)/gm, "")
+            .replace(/\*\*|__|`/g, "");
+        for (const value of [variant, plain]) {
+            if (!value.trim()) continue;
+            candidates.add(`thinking\n${value}`);
+            candidates.add(`think\n${value}`);
+            candidates.add(value);
         }
     }
-
-    const rawText = chars.map((item) => item.char).join("");
-    const markerMatch = rawText.match(/<\/thinking>|<\/think>/i);
-    if (!markerMatch) {
-        return null;
+    const normalizedDomText = normalizeTextForMatch(rawText);
+    for (const candidate of candidates) {
+        if (!getNormalizedMatchCandidates(candidate).some((target) => normalizedDomText.includes(target))) continue;
+        const matched = ensureHiddenMatchedText(mesText, candidate, hiddenClass, ignoredClasses);
+        if (matched) return matched;
     }
 
-    const markerIndex = markerMatch.index ?? -1;
-    if (markerIndex < 0) {
-        return null;
-    }
-
-    const endIndex = markerIndex + markerMatch[0].length - 1;
-    const endPos = chars[endIndex];
-    if (!endPos) {
-        return null;
-    }
-
+    // If formatting also changed the text, only use a structural boundary when
+    // the raw message proves that a single CoT is the entire leading section.
+    const blocks = findCotBlocks(rawMessage);
+    if (blocks.length !== 1 || rawMessage.slice(0, blocks[0].start).trim()) return null;
+    const suffix = rawMessage.slice(blocks[0].end).trim().replace(/^(?:<\/(?:think|thinking)\s*>\s*)+/i, "");
+    const contentElements = Array.from(mesText.querySelectorAll("content"));
+    const contentAnchor = /^<content\s*>/i.test(suffix) && contentElements.length === 1 ? contentElements[0] : null;
+    if (suffix && !contentAnchor) return null;
     const range = document.createRange();
-    range.setStart(mesText, 0);
-    range.setEnd(endPos.node, endPos.offset + 1);
-
+    range.selectNodeContents(mesText);
+    if (contentAnchor) {
+        let boundary = contentAnchor;
+        while (boundary.parentElement !== mesText && !boundary.previousSibling) boundary = boundary.parentElement;
+        range.setEndBefore(boundary);
+    }
+    if (!range.toString().trim()) return null;
     const hidden = document.createElement("span");
     hidden.className = hiddenClass;
     hidden.hidden = true;
@@ -534,7 +601,7 @@ function createCotHost(mesId) {
 }
 
 function updateFrameHeight(frame) {
-    if (!frame) {
+    if (!frame?.isConnected) {
         return;
     }
 
@@ -560,13 +627,16 @@ function updateFrameHeight(frame) {
         const primary = doc.querySelector(".status-panel, .aether-collapsible");
         const primaryRect = primary?.getBoundingClientRect();
         const primaryHeight = primaryRect ? Math.ceil(primaryRect.height) : 0;
-        const fallbackHeight = Math.ceil(Math.max(
+        const fallbackHeight = primaryHeight ? 0 : Math.ceil(Math.max(
             body?.firstElementChild?.getBoundingClientRect?.().height || 0,
             body?.scrollHeight || 0,
             root?.scrollHeight || 0,
         ));
         const height = Math.max(primaryHeight || fallbackHeight, 24);
-        frame.style.height = `${height}px`;
+        if (frame.__stlsbLastHeight !== height) {
+            frame.__stlsbLastHeight = height;
+            frame.style.height = `${height}px`;
+        }
     } catch (error) {
         console.warn("[st-local-statusbar] Failed to resize iframe:", error);
     }
@@ -579,6 +649,8 @@ function cleanupFrame(frame) {
 
     try {
         frame.__resizeObserver?.disconnect?.();
+        if (frame.__stlsbResizeRaf) window.cancelAnimationFrame(frame.__stlsbResizeRaf);
+        frame.__stlsbResizeRaf = null;
     } catch (error) {
         console.warn("[st-local-statusbar] Failed to disconnect ResizeObserver:", error);
     }
@@ -601,10 +673,16 @@ function bindFrame(frame, onLoad) {
 
     frame.dataset.bound = "1";
     const scheduleResize = () => {
-        window.requestAnimationFrame(() => updateFrameHeight(frame));
+        if (frame.__stlsbResizeRaf) return;
+        frame.__stlsbResizeRaf = window.requestAnimationFrame(() => {
+            frame.__stlsbResizeRaf = null;
+            updateFrameHeight(frame);
+        });
     };
 
     frame.addEventListener("load", () => {
+        if (!frame.isConnected) return;
+        if (frame.contentWindow) frame.contentWindow.__STLSB_SCHEDULE_RESIZE__ = scheduleResize;
         onLoad?.(frame);
         scheduleResize();
 
@@ -612,10 +690,13 @@ function bindFrame(frame, onLoad) {
             frame.__resizeObserver?.disconnect?.();
             const observer = new ResizeObserver(() => scheduleResize());
             const doc = frame.contentDocument;
-            if (doc?.documentElement) {
+            const cotPanel = doc?.querySelector(".aether-collapsible");
+            if (cotPanel) {
+                observer.observe(cotPanel);
+            } else if (doc?.documentElement) {
                 observer.observe(doc.documentElement);
             }
-            if (doc?.body) {
+            if (!cotPanel && doc?.body) {
                 observer.observe(doc.body);
             }
             frame.__resizeObserver = observer;
@@ -705,8 +786,6 @@ function applyStatusbarSettingsToFrame(frame) {
         if (typeof win.applyTextScale === "function") win.applyTextScale();
         if (typeof win.applyTextWeight === "function") win.applyTextWeight();
         if (typeof win.applyTextAlign === "function") win.applyTextAlign();
-        if (typeof win.applyStartupCollapseState === "function") win.applyStartupCollapseState();
-
         updateFrameHeight(frame);
         window.requestAnimationFrame(() => updateFrameHeight(frame));
     } catch (error) {
@@ -757,7 +836,7 @@ async function mountStatusbarForMessage(mes, statusFragment) {
         host = createStatusHost(mesId);
     }
 
-    if (host.parentElement !== mesText || host.nextSibling !== hidden) {
+    if (host.parentElement !== hidden.parentElement || host.nextSibling !== hidden) {
         hidden.before(host);
     }
 
@@ -807,31 +886,29 @@ async function mountCotForMessage(mes, cotFragment) {
         return;
     }
 
-    if (!getCotAnchorText(mesText)) {
-        destroyHost(getCotHostByMesId(mesId));
-        clearHiddenNodes(mesText, `.${cotHiddenSourceClass}`);
-        return;
-    }
-
     const hidden = ensureHiddenCotBlock(
         mesText,
         cotHiddenSourceClass,
         [statusHostClass, statusHiddenSourceClass, cotHostClass, cotHiddenSourceClass],
+        rawMessage,
+        cotText,
     );
     if (!hidden) {
         destroyHost(getCotHostByMesId(mesId));
         clearHiddenNodes(mesText, `.${cotHiddenSourceClass}`);
         return;
     }
-    trimBreakAfterHidden(hidden);
-    normalizeCotFollowingList(hidden);
+    if (hidden.dataset.legacyCot === "1") {
+        trimBreakAfterHidden(hidden);
+        normalizeCotFollowingList(hidden);
+    }
 
     let host = getCotHostByMesId(mesId);
     if (!host) {
         host = createCotHost(mesId);
     }
 
-    if (host.parentElement !== mesText || host.nextSibling !== hidden) {
+    if (host.parentElement !== hidden.parentElement || host.nextSibling !== hidden) {
         hidden.before(host);
     }
 
@@ -841,18 +918,22 @@ async function mountCotForMessage(mes, cotFragment) {
     }
 
     bindFrame(frame, (currentFrame) => {
+        currentFrame.contentWindow?.setCotContent?.(currentFrame.__stlCotText || "");
         currentFrame.classList.add("st-local-cot-frame-ready");
         updateFrameHeight(currentFrame);
     });
 
-    const version = `${cotFragment.length}:${cotFragment.charCodeAt(0) || 0}:${cotText.length}`;
-    if (frame.dataset.fragmentVersion !== version || frame.__stlCotText !== cotText) {
+    const version = `${cotFragment.length}:${cotFragment.charCodeAt(0) || 0}`;
+    const textChanged = frame.__stlCotText !== cotText;
+    frame.__stlCotText = cotText;
+    if (frame.dataset.fragmentVersion !== version || frame.__stlCotFragment !== cotFragment) {
         frame.dataset.fragmentVersion = version;
-        frame.__stlCotText = cotText;
+        frame.__stlCotFragment = cotFragment;
         frame.classList.remove("st-local-cot-frame-ready");
         frame.srcdoc = buildCotSrcdoc(cotFragment, cotText);
-    } else {
-        updateFrameHeight(frame);
+    } else if (textChanged) {
+        // Keep the document, expansion state and inner scroll position alive.
+        frame.contentWindow?.setCotContent?.(cotText);
     }
 }
 
@@ -902,6 +983,16 @@ function queueInitialMountRetries() {
     }, delay));
 }
 
+// Generation and editing emit several events for one visible change.
+function queueEventRemount(delay = 250) {
+    if (remountTimer) clearTimeout(remountTimer);
+    remountTimer = window.setTimeout(() => {
+        remountTimer = null;
+        lastCharacterMessageSignature = "";
+        queueMount(0);
+    }, delay);
+}
+
 function installEventHooks() {
     if (eventHooksInstalled) {
         return;
@@ -913,11 +1004,7 @@ function installEventHooks() {
         return;
     }
 
-    const remount = () => {
-        lastCharacterMessageSignature = "";
-        queueMount(0);
-        queueInitialMountRetries();
-    };
+    const remount = () => queueEventRemount();
 
     [
         "app_ready",
@@ -1012,7 +1099,7 @@ function installDomObserver() {
             installDomObserver();
             lastCharacterMessageSignature = "";
             queueMount(0);
-            queueInitialMountRetries();
+            queueEventRemount();
             return;
         }
 
@@ -1037,6 +1124,7 @@ function installDomObserver() {
 
             const added = Array.from(mutation.addedNodes || []);
             const removed = Array.from(mutation.removedNodes || []);
+            if (mutation.type === "characterData") return false;
             return [...added, ...removed].every((node) => {
                 const el = node instanceof Element ? node : node?.parentElement;
                 return Boolean(el?.closest?.(`.${statusHostClass}, .${statusHiddenSourceClass}, .${cotHostClass}, .${cotHiddenSourceClass}`));
